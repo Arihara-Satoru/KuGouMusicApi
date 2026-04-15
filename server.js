@@ -147,8 +147,9 @@ async function consturctServer(moduleDefs) {
       });
 
       const { cookie, ...params } = req.query;
+      const { cookie: bodyCookie, ...bodyParams } = req.body;
 
-      const query = Object.assign({}, { cookie: Object.assign({}, req.cookies, cookie) }, params, { body: req.body });
+      const query = Object.assign({}, { cookie: Object.assign({}, req.cookies, cookie, bodyCookie) }, params, { body: bodyParams });
 
       const authHeader = req.headers['authorization'];
       if (authHeader) {
@@ -221,7 +222,7 @@ async function consturctServer(moduleDefs) {
  * @returns {Promise<import('express').Express & ExpressExtension>}
  */
 async function startService() {
-  const port = Number(process.env.PORT || '3000');
+  const port = Number(process.env.PORT || '36530');
   const host = process.env.HOST || '';
 
   const app = await consturctServer();
