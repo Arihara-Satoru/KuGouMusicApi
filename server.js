@@ -25,9 +25,12 @@ const cache = require('./util/apicache').middleware;
 const guid = cryptoMd5(getGuid());
 const serverDev = randomString(10).toUpperCase();
 
-const envPath = path.join(process.cwd(), '.env');
-if (fs.existsSync(envPath)) {
-  dotenv.config({ path: envPath, quiet: true });
+const envPaths = [path.join(process.cwd(), '.env'), path.join(__dirname, '.env')];
+for (const envPath of envPaths) {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath, quiet: true });
+    break;
+  }
 }
 
 /**
