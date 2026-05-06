@@ -54,7 +54,8 @@ const cookieToJson = (cookie) => {
   let obj = {};
   cookieArr.forEach((i) => {
     let arr = i.split('=');
-    obj[arr[0]] = arr[1];
+    const key = arr[0]?.trim();
+    if (key) obj[key] = arr[1]?.trim();
   });
   return obj;
 };
