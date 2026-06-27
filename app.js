@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// import { startService } from './server';
+
 async function start() {
-  // await startService();
-  require('./server').startService();
+  require('./util/runtime').applyCliOverrides();
+  await require('./server').startService();
 }
 
-start();
+start().catch(console.error);
