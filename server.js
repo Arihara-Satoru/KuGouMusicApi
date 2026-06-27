@@ -262,7 +262,7 @@ async function consturctServer(moduleDefs) {
     ensureCookie('KUGOU_API_GUID', process.env.KUGOU_API_GUID ?? guid);
     ensureCookie('KUGOU_API_DEV', (process.env.KUGOU_API_DEV ?? serverDev).toUpperCase());
     ensureCookie('KUGOU_API_MAC', (process.env.KUGOU_API_MAC ?? '02:00:00:00:00:00').toUpperCase());
-    ensureCookie('KUGOU_API_WEBGL', (process.env.KUGOU_API_WEBGL ?? generateWebGLHash()))
+    ensureCookie('KUGOU_API_WEBGL', process.env.KUGOU_API_WEBGL ?? generateWebGLHash());
 
     // 将注入后的 cookies 回写到 req 对象上，供后续中间件和路由处理器使用
     req.cookies = cookies;
