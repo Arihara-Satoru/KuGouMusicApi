@@ -11,6 +11,11 @@ module.exports = (params, useAxios) => {
   const dfid = params?.dfid || params?.cookie?.dfid || randomString(24); // 自定义
   const vip_type = params?.cookie?.vip_type || params?.vipType || 0;
 
+  // 如果没有 hash，尝试从其他字段获取
+  const songHash = params?.hash || params?.file_hash || params?.FileHash || '';
+
+  const trackerKey = cryptoMd5(`${songHash}185672dd44712f60bb1736df5a377e82${appid}${params?.cookie?.KUGOU_API_MID}${userid}`);
+
   const dataMap = {
     area_code: '1',
     behavior: 'play',
@@ -19,7 +24,7 @@ module.exports = (params, useAxios) => {
       'album_audio_id': params.album_audio_id,
       'collect_list_id': '3',
       'collect_time': clienttime_ms,
-      'hash': params.hash,
+      'hash': songHash,
       'id': 0,
       'page_id': 1,
       'type': 'audio',
@@ -29,7 +34,7 @@ module.exports = (params, useAxios) => {
       all_m: 1,
       auth: '',
       is_free_part: params?.free_part ? 1 : 0,
-      key: cryptoMd5(`${params.hash}185672dd44712f60bb1736df5a377e82${appid}${params?.cookie?.KUGOU_API_MID}${userid}`),
+      key: trackerKey,
       module_id: 0,
       need_climax: 1,
       need_xcdn: 1,

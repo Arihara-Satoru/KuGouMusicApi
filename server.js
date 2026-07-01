@@ -448,7 +448,7 @@ async function consturctServer(moduleDefs) {
  * 启动 KuGouMusic API 服务
  *
  * 完整启动流程：
- * 1. 从环境变量读取端口号（默认 3000）和主机地址（默认空字符串，即监听所有可用地址）
+ * 1. 从环境变量读取端口号（默认 36530）和主机地址（默认 127.0.0.1，仅监听本机）
  * 2. 调用 {@link consturctServer} 构建并配置 Express 应用
  * 3. 在指定端口和主机上启动 HTTP 监听
  * 4. 输出启动成功日志
@@ -470,8 +470,8 @@ async function consturctServer(moduleDefs) {
 async function startService() {
   // 读取端口号配置，默认为 36530
   const port = Number(process.env.PORT || '36530');
-  // 读取主机地址配置，默认为空（监听所有网络接口）
-  const host = process.env.HOST || '';
+  // 读取主机地址配置，默认仅监听本机，避免桌面端启动时暴露到局域网
+  const host = process.env.HOST || '127.0.0.1';
 
   // 构建 Express 应用（包含所有中间件和路由）
   const app = await consturctServer();
@@ -481,7 +481,7 @@ async function startService() {
 
   // 启动 HTTP 服务并监听指定端口和主机
   appExt.service = app.listen(port, host, () => {
-    console.log(`server running @ http://${host || 'localhost'}:${port}`);
+    console.log(`server running @ http://${host}:${port}`);
   });
 
   return appExt;
