@@ -25,12 +25,15 @@ use tower_http::services::{ServeDir, ServeFile};
 use url::Url;
 use uuid::Uuid;
 
+mod native;
+
 const COMPAT_SOURCE: &str = include_str!("../rust-assets/compat.js");
 const MAX_BODY_BYTES: usize = 100 * 1024 * 1024;
 
 #[derive(Clone)]
 struct AppState {
     js: Arc<JsEngine>,
+    client: Client,
     device: Arc<DeviceIdentity>,
     cache: Arc<Mutex<HashMap<String, (Instant, ModuleResponse)>>>,
 }
@@ -438,11 +441,21 @@ async fn api_handler(
     let module_response = if let Some(response) = cached {
         response
     } else {
-        let response = match state
-            .js
-            .invoke(&module, params, client_ip.parse().unwrap_or(address.ip()))
+        let result = if native::supports(&module) {
+            native::invoke(
+                &module,
+                &state.client,
+                &params,
+                client_ip.parse().unwrap_or(address.ip()),
+            )
             .await
-        {
+        } else {
+            state
+                .js
+                .invoke(&module, params, client_ip.parse().unwrap_or(address.ip()))
+                .await
+        };
+        let response = match result {
             Ok(response) => response,
             Err(message) => ModuleResponse {
                 status: 404,
@@ -807,11 +820,11 @@ async fn main() -> Result<(), String> {
 
     let client = http_client()?;
     let js = Arc::new(
-        JsEngine::new(client, environment())
+        JsEngine::new(client.clone(), environment())
             .await
             .map_err(|error| format!("failed to initialize compatibility runtime: {error}"))?,
     );
-    let modules = js
+    let mut modules = js
         .context
         .async_with(async |ctx| {
             ctx.globals()
@@ -820,8 +833,12 @@ async fn main() -> Result<(), String> {
         })
         .await
         .map_err(|error| format!("failed to read embedded API modules: {error}"))?;
+    modules.extend(native::modules()?);
+    modules.sort();
+    modules.dedup();
     let state = AppState {
         js,
+        client,
         device: Arc::new(device_identity()),
         cache: Arc::new(Mutex::new(HashMap::new())),
     };

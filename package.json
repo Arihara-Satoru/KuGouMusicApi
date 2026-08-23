@@ -24,6 +24,7 @@
     "prestart": "npm run build:compat",
     "start": "cargo run --release --locked",
     "test": "cargo test",
+    "compare:native": "npm run build && node scripts/compare-native.cjs",
     "legacy:dev": "nodemon --config nodemon.json index.js",
     "legacy:start": "node app.js",
     "pkgwin": "pkg . -t node14-win-x64 -C GZip -o bin/app_win --no-bytecode",

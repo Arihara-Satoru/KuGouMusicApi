@@ -7,10 +7,15 @@ const root = path.resolve(__dirname, '..')
 const moduleDir = path.join(root, 'module')
 const outputDir = path.join(root, 'rust-assets')
 const temporaryEntry = path.join(outputDir, '.compat-entry.cjs')
+const nativeModules = new Set(JSON.parse(fs.readFileSync(path.join(root, 'rust-native.json'), 'utf8')))
 
-const modules = fs.readdirSync(moduleDir)
+const allModules = fs.readdirSync(moduleDir)
   .filter(file => file.endsWith('.js') && !file.startsWith('_'))
   .sort()
+for (const module of nativeModules) {
+  if (!allModules.includes(`${module}.js`)) throw new Error(`native module does not exist: ${module}`)
+}
+const modules = allModules.filter(file => !nativeModules.has(file.slice(0, -3)))
 
 fs.mkdirSync(outputDir, { recursive: true })
 fs.writeFileSync(temporaryEntry, `
@@ -107,7 +112,7 @@ async function main() {
     .replace(/\n+$/, '\n')
   fs.writeFileSync(output, bundle)
   fs.rmSync(temporaryEntry, { force: true })
-  console.log(`[build-rust-compat] embedded ${modules.length} API modules`)
+  console.log(`[build-rust-compat] embedded ${modules.length} compatibility modules; ${nativeModules.size}/${allModules.length} native Rust modules`)
 }
 
 main().catch(error => {
