@@ -410,6 +410,25 @@ pub async fn invoke(
             )
             .await
         }
+        "audio_match" => {
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/fingerprint.service/v1/music_trackid_mulit")
+                    .params(json!({
+                        "fpid": unix_time_millis()?,
+                        "area_code": 1,
+                        "include_unpublish": 1,
+                        "useid": param_or_cookie(params, "userid", json!(0)),
+                        "multi_result": 1,
+                    }))
+                    .raw_data(input_bytes(params, "data")?)
+                    .header("content-type", "application/octet-stream")
+                    .header("user-agent", "KuGou/11490 (Android)"),
+            )
+            .await
+        }
         "audio_related" => {
             let show_detail = number_is_zero(params.get("show_detail"));
             let mut query = Map::from_iter([
@@ -3169,6 +3188,7 @@ struct NativeRequest {
     method: Method,
     params: Map<String, Value>,
     data: Option<Value>,
+    raw_data: Option<Vec<u8>>,
     headers: HashMap<String, String>,
     base_url: String,
     signature: SignatureKind,
@@ -3203,6 +3223,7 @@ impl NativeRequest {
             method,
             params: Map::new(),
             data: None,
+            raw_data: None,
             headers: HashMap::new(),
             base_url: "https://gateway.kugou.com".to_owned(),
             signature: SignatureKind::Android,
@@ -3219,6 +3240,11 @@ impl NativeRequest {
 
     fn data(mut self, data: Value) -> Self {
         self.data = Some(data);
+        self
+    }
+
+    fn raw_data(mut self, data: Vec<u8>) -> Self {
+        self.raw_data = Some(data);
         self
     }
 
@@ -3445,6 +3471,17 @@ fn split_values(value: Value) -> Vec<String> {
             .map(str::to_owned)
             .collect(),
     }
+}
+
+fn input_bytes(params: &Value, name: &str) -> Result<Vec<u8>, String> {
+    let Some(value) = params.get(name) else {
+        return Ok(Vec::new());
+    };
+    let encoded = value
+        .get("__kugou_buffer__")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{name} must be a binary request body"))?;
+    BASE64.decode(encoded).map_err(|error| error.to_string())
 }
 
 fn enrich_cloud_match(body: &mut Value) {
@@ -3709,7 +3746,11 @@ async fn android_request_inner(
     let data = options.data.as_ref().map_or_else(String::new, js_string);
     if !query.contains_key("signature") {
         let signature = match options.signature {
-            SignatureKind::Android => Some(signature_android(&query, &data, is_lite)),
+            SignatureKind::Android => Some(if let Some(raw_data) = &options.raw_data {
+                signature_android_bytes(&query, raw_data, is_lite)
+            } else {
+                signature_android(&query, &data, is_lite)
+            }),
             SignatureKind::Web => Some(signature_web(&query)),
             SignatureKind::None => None,
         };
@@ -3741,7 +3782,9 @@ async fn android_request_inner(
         .header("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F")
         .header("X-Real-IP", ip.to_string())
         .header("X-Forwarded-For", ip.to_string());
-    if let Some(data) = options.data {
+    if let Some(data) = options.raw_data {
+        request = request.body(data);
+    } else if let Some(data) = options.data {
         request = if data.is_object() || data.is_array() {
             request.json(&data)
         } else {
@@ -3801,6 +3844,20 @@ fn signature_android(params: &Map<String, Value>, data: &str, is_lite: bool) -> 
         .map(|(key, value)| format!("{key}={}", js_string(value)))
         .collect::<String>();
     format!("{:x}", md5::compute(format!("{salt}{params}{data}{salt}")))
+}
+
+fn signature_android_bytes(params: &Map<String, Value>, data: &[u8], is_lite: bool) -> String {
+    let salt = if is_lite {
+        "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA"
+    } else {
+        "OIlwieks28dk2k092lksi2UIkp"
+    };
+    let mut context = md5::Context::new();
+    context.consume(salt.as_bytes());
+    context.consume(sorted_pairs(params, "").as_bytes());
+    context.consume(data);
+    context.consume(salt.as_bytes());
+    format!("{:x}", context.finalize())
 }
 
 fn signature_web(params: &Map<String, Value>) -> String {
@@ -3931,7 +3988,7 @@ mod tests {
     #[test]
     fn manifest_only_lists_implemented_handlers() {
         let modules = modules().expect("native manifest should be valid JSON");
-        assert_eq!(modules.len(), 145);
+        assert_eq!(modules.len(), 146);
         assert!(modules.iter().all(|module| supports(module)));
     }
 

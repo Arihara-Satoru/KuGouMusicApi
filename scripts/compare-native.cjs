@@ -33,9 +33,13 @@ function start(command, args, port) {
   return child
 }
 
-function request(url) {
+function request(url, options = {}) {
   return new Promise((resolve, reject) => {
-    http.get(url, response => {
+    const body = options.body
+    const request = http.request(url, {
+      method: options.method || 'GET',
+      headers: body ? { 'content-type': 'application/octet-stream', 'content-length': body.length } : {},
+    }, response => {
       const chunks = []
       response.on('data', chunk => chunks.push(chunk))
       response.on('end', () => {
@@ -47,6 +51,8 @@ function request(url) {
         }
       })
     }).on('error', reject)
+    if (body) request.write(body)
+    request.end()
   })
 }
 
@@ -93,6 +99,7 @@ async function main() {
       { module: 'audio', route: '/audio?hash=ABC', compareShape: true },
       { module: 'audio_accompany_matching', route: '/audio/accompany/matching?mixId=1&fileName=test&hash=ABC', compareShape: true },
       { module: 'audio_ktv_total', route: '/audio/ktv/total?songId=1&singerName=test&songHash=ABC', compareShape: true },
+      { module: 'audio_match', route: '/audio/match?userid=0', method: 'POST', body: Buffer.from('native-contract-audio'), compareShape: true },
       { module: 'audio_related', route: '/audio/related?album_audio_id=1&page=1&pagesize=2', compareShape: true },
       { module: 'brush', route: '/brush?userid=0&song_pool_id=0', compareShape: true },
       { module: 'comment_floor', route: '/comment/floor?resource_type=song&special_id=1&mixsongid=1&tid=1&page=1&pagesize=2', compareShape: true },
@@ -226,8 +233,8 @@ async function main() {
     assert.deepStrictEqual(cases.map(test => test.module).sort(), [...nativeModules].sort(), 'every native module needs a comparison case')
     for (const test of cases) {
       const [rustResponse, nodeResponse] = await Promise.all([
-        request(`http://127.0.0.1:${rustPort}${test.route}`),
-        request(`http://127.0.0.1:${nodePort}${test.route}`),
+        request(`http://127.0.0.1:${rustPort}${test.route}`, test),
+        request(`http://127.0.0.1:${nodePort}${test.route}`, test),
       ])
       for (const response of [rustResponse, nodeResponse]) {
         if (response.status === 502 && response.body?.status === 0 && response.body.msg) {
