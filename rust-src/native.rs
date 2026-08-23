@@ -25,6 +25,83 @@ pub async fn invoke(
     ip: IpAddr,
 ) -> Result<ModuleResponse, String> {
     match module {
+        "ai_recommend" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let clienttime = unix_time_millis()?;
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/recommend")
+                    .data(json!({
+                        "platform": "ios",
+                        "clientver": clientver,
+                        "clienttime": clienttime,
+                        "userid": param_or_cookie(params, "userid", json!(0)),
+                        "client_playlist": [],
+                        "source_type": 2,
+                        "playlist_ver": 2,
+                        "area_code": 1,
+                        "appid": appid,
+                        "key": sign_params_key(clienttime, is_lite),
+                        "mid": cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                        "recommend_source": csv_number_objects(params, "album_audio_id", "ID"),
+                    }))
+                    .header("x-router", "songlistairec.kugou.com")
+                    .clear_default_params(),
+            )
+            .await
+        }
+        "album" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let clienttime = unix_time_millis()?;
+            let mut data = Map::from_iter([
+                ("appid".to_owned(), json!(appid)),
+                ("clienttime".to_owned(), json!(clienttime)),
+                ("clientver".to_owned(), json!(clientver)),
+                (
+                    "data".to_owned(),
+                    Value::Array(
+                        js_string(&value_or(params, "album_id", json!("")))
+                            .split(',')
+                            .map(|album_id| json!({ "album_id": album_id, "album_name": "", "author_name": "" }))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "dfid".to_owned(),
+                    cookie_or_param(params, "dfid", json!("-")),
+                ),
+                ("fields".to_owned(), value_or(params, "fields", json!(""))),
+                (
+                    "key".to_owned(),
+                    json!(sign_params_key(clienttime, is_lite)),
+                ),
+                (
+                    "mid".to_owned(),
+                    cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                ),
+            ]);
+            let token = cookie_or_param(params, "token", json!(0));
+            let userid = cookie_or_param(params, "userid", json!(0));
+            if truthy(&token) {
+                data.insert("token".to_owned(), token);
+            }
+            if truthy(&userid) {
+                data.insert("userid".to_owned(), userid);
+            }
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v1/album")
+                    .base_url("http://kmr.service.kugou.com")
+                    .data(Value::Object(data))
+                    .header("x-router", "kmr.service.kugou.com")
+                    .header("Content-Type", "application/json"),
+            )
+            .await
+        }
         "album_detail" => {
             android_request(
                 client,
@@ -88,6 +165,32 @@ pub async fn invoke(
                     }))
                     .header("x-router", "openapi.kugou.com")
                     .header("kg-tid", "36"),
+            )
+            .await
+        }
+        "artist_audios" => {
+            let clienttime = unix_time_millis()? / 1000;
+            let (appid, clientver, is_lite) = platform_config();
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/kmr/v1/audio_group/author")
+                    .base_url("https://openapi.kugou.com")
+                    .data(json!({
+                        "appid": appid,
+                        "clientver": clientver,
+                        "mid": cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                        "clienttime": clienttime,
+                        "key": sign_params_key(clienttime, is_lite),
+                        "author_id": value(params, "id"),
+                        "pagesize": value_or(params, "pagesize", json!(30)),
+                        "page": value_or(params, "page", json!(1)),
+                        "sort": if params.get("sort").and_then(Value::as_str) == Some("hot") { 1 } else { 2 },
+                        "area_code": "all",
+                    }))
+                    .header("x-router", "openapi.kugou.com")
+                    .header("kg-tid", "220"),
             )
             .await
         }
@@ -191,6 +294,175 @@ pub async fn invoke(
                     .base_url("http://login.user.kugou.com")
                     .without_cookie()
                     .data(json!({ "businessid": 5, "mobile": mobile, "plat": 3 })),
+            )
+            .await
+        }
+        "audio" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let clienttime = unix_time_millis()?;
+            let mut data = Map::from_iter([
+                ("appid".to_owned(), json!(appid)),
+                ("clienttime".to_owned(), json!(clienttime)),
+                ("clientver".to_owned(), json!(clientver)),
+                ("data".to_owned(), csv_hash_audio(params)),
+                (
+                    "dfid".to_owned(),
+                    cookie_or_param(params, "dfid", json!("-")),
+                ),
+                (
+                    "key".to_owned(),
+                    json!(sign_params_key(clienttime, is_lite)),
+                ),
+                (
+                    "mid".to_owned(),
+                    cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                ),
+            ]);
+            let token = cookie_or_param(params, "token", json!(0));
+            let userid = cookie_or_param(params, "userid", json!(0));
+            if truthy(&token) {
+                data.insert("token".to_owned(), token);
+            }
+            if truthy(&userid) {
+                data.insert("userid".to_owned(), userid);
+            }
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v1/audio/audio")
+                    .base_url("http://kmr.service.kugou.com")
+                    .data(Value::Object(data))
+                    .header("x-router", "kmr.service.kugou.com")
+                    .header("Content-Type", "application/json"),
+            )
+            .await
+        }
+        "audio_accompany_matching" => {
+            let (appid, _, _) = platform_config();
+            let mix_id = number_value(value(params, "mixId"));
+            let mut query = Map::from_iter([
+                ("isteen".to_owned(), json!(0)),
+                (
+                    "mixId".to_owned(),
+                    if truthy(&mix_id) { mix_id } else { json!(0) },
+                ),
+                ("usemkv".to_owned(), json!(1)),
+                ("platform".to_owned(), json!(2)),
+                (
+                    "fileName".to_owned(),
+                    value_or(params, "fileName", json!("")),
+                ),
+                ("hash".to_owned(), value(params, "hash")),
+                ("version".to_owned(), json!(12375)),
+                ("appid".to_owned(), json!(appid)),
+            ]);
+            let signature = format!(
+                "{:x}",
+                md5::compute(format!("{}*s&iN#G70*", sorted_pairs(&query, "&")))
+            );
+            query.insert("sign".to_owned(), json!(&signature[8..24]));
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get(
+                    "/sing7/accompanywan/json/v2/cdn/optimal_matching_accompany_2_listen.do",
+                )
+                .base_url("https://nsongacsing.kugou.com")
+                .params(Value::Object(query))
+                .clear_default_params()
+                .unsigned(),
+            )
+            .await
+        }
+        "audio_ktv_total" => {
+            let (appid, _, _) = platform_config();
+            let mut query = Map::from_iter([
+                ("isteen".to_owned(), json!(0)),
+                (
+                    "songId".to_owned(),
+                    number_value(value(params, "songId")),
+                ),
+                ("usemkv".to_owned(), json!(1)),
+                ("platform".to_owned(), json!(2)),
+                ("singerName".to_owned(), value(params, "singerName")),
+                ("songHash".to_owned(), value(params, "songHash")),
+                ("version".to_owned(), json!(12375)),
+                ("appid".to_owned(), json!(appid)),
+            ]);
+            let signature = format!(
+                "{:x}",
+                md5::compute(format!("{}*s&iN#G70*", sorted_pairs(&query, "&")))
+            );
+            query.insert("sign".to_owned(), json!(&signature[8..24]));
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get(
+                    "/sing7/listenguide/json/v2/cdn/listenguide/get_total_opus_num_v02.do",
+                )
+                .base_url("https://acsing.service.kugou.com")
+                .params(Value::Object(query))
+                .clear_default_params()
+                .unsigned(),
+            )
+            .await
+        }
+        "audio_related" => {
+            let show_detail = number_is_zero(params.get("show_detail"));
+            let mut query = Map::from_iter([
+                (
+                    "album_audio_id".to_owned(),
+                    number_value(value(params, "album_audio_id")),
+                ),
+                ("appid".to_owned(), json!(1005)),
+                ("area_code".to_owned(), json!(1)),
+                ("clientver".to_owned(), json!(12329)),
+            ]);
+            if !show_detail {
+                let sort = match params.get("sort").and_then(Value::as_str) {
+                    Some("hot") => 2,
+                    Some("new") => 3,
+                    _ => 1,
+                };
+                query.extend(Map::from_iter([
+                    ("page".to_owned(), value_or(params, "page", json!(1))),
+                    (
+                        "pagesize".to_owned(),
+                        value_or(params, "pagesize", json!(30)),
+                    ),
+                    ("show_input".to_owned(), json!(1)),
+                    (
+                        "show_type".to_owned(),
+                        value_or(params, "show_type", json!(0)),
+                    ),
+                    ("sort".to_owned(), json!(sort)),
+                    ("type".to_owned(), value_or(params, "type", json!(0))),
+                ]));
+            }
+            query.insert("version".to_owned(), json!(1));
+            let salt = "OIlwieks28dk2k092lksi2UIkp";
+            query.insert(
+                "signature".to_owned(),
+                json!(format!(
+                    "{:x}",
+                    md5::compute(format!("{salt}{}{salt}", sorted_pairs(&query, "")))
+                )),
+            );
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get(if show_detail {
+                    "/v2/audio_related/total"
+                } else {
+                    "/v3/album_audio/related"
+                })
+                .base_url("https://listkmrp3cdnretry.kugou.com")
+                .params(Value::Object(query))
+                .clear_default_params(),
             )
             .await
         }
@@ -1770,6 +2042,664 @@ pub async fn invoke(
             )
             .await
         }
+        "everyday_friend" => {
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post(
+                    "/sing7/relation/json/v3/friend_rec_by_using_song_list",
+                )
+                .base_url("https://acsing.service.kugou.com")
+                .params(json!({ "channel": 130, "isteen": 0, "platform": 2, "usemkv": 1 }))
+                .data(json!({
+                    "list": [{
+                        "user_id": 853927886,
+                        "mixsong_ids": [290083753,251724346,571554587,250126644,208831644,40328518,250504076,581706850,318347675,585258401,288481998,407414475,28239430,280584633,291957521,64556644,243149863,488725103,32114153,39951172,29019580,40397606,327507651,32029382,32218359,340353127,276448762,177071956,100031397,249251602]
+                    }]
+                }))
+                .header("pid", "126556797"),
+            )
+            .await
+        }
+        "fm_class" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let clienttime = unix_time_millis()?;
+            let userid = cookie_or_param(params, "userid", json!(0));
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v1/class_fm_song")
+                    .data(json!({
+                        "kguid": userid,
+                        "clienttime": clienttime,
+                        "mid": cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                        "platform": "android",
+                        "clientver": clientver,
+                        "uid": userid,
+                        "get_tracker": 1,
+                        "key": sign_params_key(clienttime, is_lite),
+                        "appid": appid,
+                    }))
+                    .header("x-router", "fm.service.kugou.com"),
+            )
+            .await
+        }
+        "fm_image" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let clienttime = unix_time_millis()?;
+            let mut data = Map::from_iter([
+                ("appid".to_owned(), json!(appid)),
+                ("clienttime".to_owned(), json!(clienttime)),
+                ("clientver".to_owned(), json!(clientver)),
+                (
+                    "data".to_owned(),
+                    Value::Array(
+                        js_string(&value_or(params, "fmid", json!("")))
+                            .split(',')
+                            .map(|fmid| json!({ "fields": "imgUrl100,imgUrl50", "fmid": fmid, "fmtype": 2 }))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "dfid".to_owned(),
+                    cookie_or_param(params, "dfid", json!("-")),
+                ),
+                (
+                    "key".to_owned(),
+                    json!(sign_params_key(clienttime, is_lite)),
+                ),
+                (
+                    "mid".to_owned(),
+                    cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                ),
+            ]);
+            let userid = cookie_or_param(params, "userid", Value::Null);
+            let token = cookie_or_param(params, "token", Value::Null);
+            if truthy(&userid) {
+                data.insert("userid".to_owned(), userid);
+            }
+            if truthy(&token) {
+                data.insert("token".to_owned(), token);
+            }
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v1/fm_info")
+                    .data(Value::Object(data))
+                    .header("x-router", "fm.service.kugou.com")
+                    .header("Content-Type", "application/json"),
+            )
+            .await
+        }
+        "fm_recommend" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let clienttime = unix_time_millis()?;
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v1/rcmd_list")
+                    .data(json!({
+                        "appid": appid,
+                        "clientver": clientver,
+                        "clienttime": clienttime,
+                        "mid": cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                        "key": sign_params_key(clienttime, is_lite),
+                        "rcmdsongcount": 1,
+                        "level": 0,
+                        "area_code": 1,
+                        "get_tracker": 1,
+                        "uid": 0,
+                    }))
+                    .header("x-router", "fm.service.kugou.com"),
+            )
+            .await
+        }
+        "fm_songs" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let clienttime = unix_time_millis()?;
+            let mut fm_data: Vec<Value> = js_string(&value_or(params, "fmid", json!("")))
+                .split(',')
+                .map(|fmid| {
+                    json!({
+                        "fmid": fmid,
+                        "fmtype": value_or(params, "type", json!(2)),
+                        "offset": value_or(params, "offset", json!(-1)),
+                        "size": value_or(params, "size", json!(20)),
+                        "singername": "",
+                    })
+                })
+                .collect();
+            for (name, field) in [
+                ("fmtype", "fmtype"),
+                ("fmoffset", "offset"),
+                ("fmsize", "size"),
+            ] {
+                for (index, item) in js_string(&value_or(params, name, json!("")))
+                    .split(',')
+                    .enumerate()
+                {
+                    if let Some(object) = fm_data.get_mut(index).and_then(Value::as_object_mut)
+                        && !item.is_empty()
+                    {
+                        object.insert(field.to_owned(), json!(item));
+                    }
+                }
+            }
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v1/app_song_list_offset")
+                    .data(json!({
+                        "appid": appid,
+                        "area_code": 1,
+                        "clienttime": clienttime,
+                        "clientver": clientver,
+                        "data": fm_data,
+                        "get_tracker": 1,
+                        "key": sign_params_key(clienttime, is_lite),
+                        "mid": cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                        "uid": cookie_or_param(params, "userid", Value::Null),
+                    }))
+                    .header("x-router", "fm.service.kugou.com")
+                    .header("Content-Type", "application/json"),
+            )
+            .await
+        }
+        "personal_fm" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let clienttime = unix_time_millis()?;
+            let userid = cookie_or_param(params, "userid", json!(0));
+            let token = cookie_or_param(params, "token", json!(0));
+            let vip_type = cookie_or_param(params, "vip_type", value_or(params, "vipType", json!(0)));
+            let mut data = Map::from_iter([
+                ("appid".to_owned(), json!(appid)),
+                ("clienttime".to_owned(), json!(clienttime)),
+                (
+                    "mid".to_owned(),
+                    cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                ),
+                ("action".to_owned(), value_or(params, "action", json!("play"))),
+                ("recommend_source_locked".to_owned(), json!(0)),
+                (
+                    "song_pool_id".to_owned(),
+                    number_value(value_or(params, "song_pool_id", json!(0))),
+                ),
+                ("callerid".to_owned(), json!(0)),
+                ("m_type".to_owned(), json!(1)),
+                (
+                    "platform".to_owned(),
+                    value_or(params, "platform", json!("ios")),
+                ),
+                ("area_code".to_owned(), json!(1)),
+                (
+                    "remain_songcnt".to_owned(),
+                    number_value(value_or(params, "remain_songcnt", json!(0))),
+                ),
+                ("clientver".to_owned(), json!(clientver)),
+                (
+                    "is_overplay".to_owned(),
+                    json!(u8::from(params.get("is_overplay").is_some_and(truthy))),
+                ),
+                ("mode".to_owned(), value_or(params, "mode", json!("normal"))),
+                (
+                    "fakem".to_owned(),
+                    json!("ca981cfc583a4c37f28d2d49000013c16a0a"),
+                ),
+                (
+                    "key".to_owned(),
+                    json!(sign_params_key(clienttime, is_lite)),
+                ),
+            ]);
+            if truthy(&userid) {
+                data.insert("userid".to_owned(), userid.clone());
+                data.insert("kguid".to_owned(), userid);
+            }
+            if truthy(&token) {
+                data.insert("token".to_owned(), token);
+            }
+            if truthy(&vip_type) {
+                data.insert("vip_type".to_owned(), vip_type);
+            }
+            for field in ["hash", "songid", "playtime"] {
+                if let Some(value) = params.get(field).filter(|value| truthy(value)) {
+                    data.insert(field.to_owned(), value.clone());
+                }
+            }
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v2/personal_recommend")
+                    .data(Value::Object(data))
+                    .header("x-router", "persnfm.service.kugou.com"),
+            )
+            .await
+        }
+        "playlist_add" => {
+            let userid = param_or_cookie(params, "userid", json!(0));
+            let token = param_or_cookie(params, "token", json!(""));
+            let list_type = value_or(params, "type", json!(0));
+            let mut data = Map::from_iter([
+                ("userid".to_owned(), userid.clone()),
+                ("token".to_owned(), token.clone()),
+                ("total_ver".to_owned(), json!(0)),
+                ("name".to_owned(), value(params, "name")),
+                ("type".to_owned(), list_type.clone()),
+                (
+                    "source".to_owned(),
+                    if number_is_zero(params.get("source")) {
+                        json!(0)
+                    } else {
+                        value_or(params, "source", json!(1))
+                    },
+                ),
+                ("is_pri".to_owned(), json!(0)),
+                (
+                    "list_create_userid".to_owned(),
+                    value(params, "list_create_userid"),
+                ),
+                (
+                    "list_create_listid".to_owned(),
+                    value(params, "list_create_listid"),
+                ),
+                (
+                    "list_create_gid".to_owned(),
+                    value_or(params, "list_create_gid", json!("")),
+                ),
+                ("from_shupinmv".to_owned(), json!(0)),
+            ]);
+            if number_is_zero(Some(&list_type)) {
+                data.insert("is_pri".to_owned(), value_or(params, "is_pri", json!(0)));
+            }
+            let query = if number_is_zero(Some(&list_type)) {
+                json!({
+                    "last_time": unix_time_millis()? / 1000,
+                    "last_area": "gztx",
+                    "userid": userid,
+                    "token": token,
+                })
+            } else {
+                json!({})
+            };
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/cloudlist.service/v5/add_list")
+                    .params(query)
+                    .data(Value::Object(data)),
+            )
+            .await
+        }
+        "playlist_track_all" => {
+            let pagesize = number_value(value_or(params, "pagesize", json!(30)))
+                .as_f64()
+                .unwrap_or(30.0);
+            let page = number_value(value_or(params, "page", json!(1)))
+                .as_f64()
+                .unwrap_or(1.0);
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get("/pubsongs/v2/get_other_list_file_nofilt").params(json!({
+                    "area_code": 1,
+                    "begin_idx": (page - 1.0) * pagesize,
+                    "plat": 1,
+                    "type": 1,
+                    "mode": 1,
+                    "personal_switch": 1,
+                    "extend_fields": "abtags,hot_cmt,popularization",
+                    "pagesize": value_or(params, "pagesize", json!(30)),
+                    "global_collection_id": value(params, "id"),
+                })),
+            )
+            .await
+        }
+        "playlist_track_all_new" => {
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v4/get_list_all_file")
+                    .data(json!({
+                        "listid": value(params, "listid"),
+                        "userid": param_or_cookie(params, "userid", json!("0")),
+                        "area_code": 1,
+                        "show_relate_goods": 0,
+                        "pagesize": value_or(params, "pagesize", json!(30)),
+                        "allplatform": 1,
+                        "show_cover": 1,
+                        "type": 0,
+                        "token": param_or_cookie(params, "token", json!("0")),
+                        "page": value_or(params, "page", json!(1)),
+                    }))
+                    .header("x-router", "cloudlist.service.kugou.com"),
+            )
+            .await
+        }
+        "playlist_tracks_add" => {
+            let userid = param_or_cookie(params, "userid", json!(0));
+            let token = param_or_cookie(params, "token", json!(""));
+            let resource = js_string(&value_or(params, "data", json!("")))
+                .split(',')
+                .map(|item| {
+                    let fields: Vec<_> = item.split('|').collect();
+                    json!({
+                        "number": 1,
+                        "name": fields.first().copied().unwrap_or(""),
+                        "hash": fields.get(1).copied().unwrap_or(""),
+                        "size": 0,
+                        "sort": 0,
+                        "timelen": 0,
+                        "bitrate": 0,
+                        "album_id": fields.get(2).copied().unwrap_or("0").parse::<f64>().unwrap_or(0.0),
+                        "mixsongid": fields.get(3).copied().unwrap_or("0").parse::<f64>().unwrap_or(0.0),
+                    })
+                })
+                .collect::<Vec<_>>();
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/cloudlist.service/v6/add_song")
+                    .params(json!({
+                        "last_time": unix_time_millis()? / 1000,
+                        "last_area": "gztx",
+                        "userid": userid,
+                        "token": token,
+                    }))
+                    .data(json!({
+                        "userid": userid,
+                        "token": token,
+                        "listid": value(params, "listid"),
+                        "list_ver": 0,
+                        "type": 0,
+                        "slow_upload": 1,
+                        "scene": "false;null",
+                        "data": resource,
+                    })),
+            )
+            .await
+        }
+        "privilege_lite" => {
+            let (appid, clientver, _) = platform_config();
+            let mut resource = csv_hash_resource(params, "hash", "hash", json!({
+                "type": "audio",
+                "page_id": 0,
+                "album_id": 0,
+            }));
+            apply_csv_field(&mut resource, params, "album_id", "album_id");
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v2/get_res_privilege/lite")
+                    .data(json!({
+                        "appid": appid,
+                        "area_code": 1,
+                        "behavior": "play",
+                        "clientver": clientver,
+                        "need_hash_offset": 1,
+                        "relate": 1,
+                        "support_verify": 1,
+                        "resource": resource,
+                        "qualities": ["128", "320", "flac", "high", "viper_atmos", "viper_tape", "viper_clear", "super", "multitrack"],
+                    }))
+                    .header("x-router", "media.store.kugou.com")
+                    .header("Content-Type", "application/json"),
+            )
+            .await
+        }
+        "search" => {
+            let search_type = match params.get("type").and_then(Value::as_str) {
+                Some("special") => "special",
+                Some("lyric") => "lyric",
+                Some("album") => "album",
+                Some("author") => "author",
+                Some("mv") => "mv",
+                _ => "song",
+            };
+            let url = match search_type {
+                "song" => "/v3/search/song",
+                "special" => "/v1/search/special",
+                "lyric" => "/v1/search/lyric",
+                "album" => "/v1/search/album",
+                "author" => "/v1/search/author",
+                _ => "/v1/search/mv",
+            };
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get(url)
+                    .params(json!({
+                        "albumhide": 0,
+                        "iscorrection": 1,
+                        "keyword": value_or(params, "keywords", json!("")),
+                        "nocollect": 0,
+                        "page": value_or(params, "page", json!(1)),
+                        "pagesize": value_or(params, "pagesize", json!(30)),
+                        "platform": "AndroidFilter",
+                    }))
+                    .header("x-router", "complexsearch.kugou.com"),
+            )
+            .await
+        }
+        "search_default" => {
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/searchnofocus/v1/search_no_focus_word")
+                    .params(json!({ "clientver": 12329 }))
+                    .data(json!({
+                        "plat": 0,
+                        "userid": number_value(param_or_cookie(params, "userid", json!(0))),
+                        "tags": "{}",
+                        "vip_type": param_or_cookie(params, "vip_type", json!(65530)),
+                        "m_type": 0,
+                        "own_ads": {},
+                        "ability": "3",
+                        "sources": [],
+                        "bitmap": 2,
+                        "mode": "normal",
+                    })),
+            )
+            .await
+        }
+        "search_mixed" => {
+            let clienttime = unix_time_millis()?;
+            let requestid = format!(
+                "{:x}_0",
+                md5::compute(format!("bdaa53d04e7475feb9024164a47032f9{clienttime}"))
+            );
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get("/v3/search/mixed")
+                    .params(json!({
+                        "ab_tag": 0,
+                        "ability": 511,
+                        "albumhide": 0,
+                        "apiver": 22,
+                        "area_code": 1,
+                        "clientver": 20125,
+                        "cursor": 0,
+                        "is_gpay": 0,
+                        "iscorrection": 1,
+                        "keyword": value(params, "keyword"),
+                        "nocollect": 0,
+                        "osversion": 16.5,
+                        "platform": "IOSFilter",
+                        "recver": 2,
+                        "req_ai": 1,
+                        "requestid": requestid,
+                        "search_ability": 3,
+                        "sec_aggre": 1,
+                        "sec_aggre_bitmap": 0,
+                        "style_type": 3,
+                        "tag": "em",
+                    }))
+                    .header("x-router", "complexsearch.kugou.com")
+                    .header("kg-clienttimems", clienttime.to_string()),
+            )
+            .await
+        }
+        "top_card" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let clienttime = unix_time_millis()?;
+            let fakem = "60f7ebf1f812edbac3c63a7310001701760f";
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/singlecardrec.service/v1/single_card_recommend")
+                    .params(json!({
+                        "card_id": value_or(params, "card_id", json!(1)),
+                        "fakem": fakem,
+                        "area_code": 1,
+                        "platform": "ios",
+                    }))
+                    .data(json!({
+                        "appid": appid,
+                        "clientver": clientver,
+                        "platform": "android",
+                        "clienttime": clienttime,
+                        "userid": param_or_cookie(params, "userid", json!(0)),
+                        "key": sign_params_key(clienttime, is_lite),
+                        "fakem": fakem,
+                        "area_code": 1,
+                        "mid": cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                        "uuid": "-",
+                        "client_playlist": [],
+                        "u_info": "a0c35cd40af564444b5584c2754dedec",
+                    })),
+            )
+            .await
+        }
+        "top_card_youth" => {
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/youth/v1/song/single_card_recommend")
+                    .params(json!({
+                        "card_id": value_or(params, "card_id", json!(3005)),
+                        "area_code": 1,
+                        "platform": "ios",
+                        "module_id": 1,
+                        "ver": "v2",
+                        "pagesize": value_nullish(params, "pagesize", json!(30)),
+                        "clientver": 11490,
+                    }))
+                    .data(json!({
+                        "tagid": value_nullish(params, "tagid", json!("")),
+                        "u_info": "",
+                        "source_mixsong": "",
+                    })),
+            )
+            .await
+        }
+        "top_playlist" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let clienttime = ((unix_time_millis()? as f64 / 1000.0).round() as u64).to_string();
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v2/special_recommend")
+                    .data(json!({
+                        "appid": appid,
+                        "mid": cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                        "clientver": clientver,
+                        "platform": "android",
+                        "clienttime": clienttime,
+                        "userid": param_or_cookie(params, "userid", json!(0)),
+                        "module_id": value_or(params, "module_id", json!(1)),
+                        "page": value_or(params, "page", json!(1)),
+                        "pagesize": value_or(params, "pagesize", json!(30)),
+                        "key": sign_params_key(&clienttime, is_lite),
+                        "special_recommend": {
+                            "withtag": value_or(params, "withtag", json!(1)),
+                            "withsong": value_or(params, "withsong", json!(1)),
+                            "sort": value_or(params, "sort", json!(1)),
+                            "ugc": 1,
+                            "is_selected": 0,
+                            "withrecommend": 1,
+                            "area_code": 1,
+                            "categoryid": value_or(params, "category_id", json!(0)),
+                        },
+                        "req_multi": 1,
+                        "retrun_min": 5,
+                        "return_special_falg": 1,
+                    }))
+                    .header("x-router", "specialrec.service.kugou.com"),
+            )
+            .await
+        }
+        "video_detail" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let clienttime = unix_time_millis()? / 1000;
+            let dfid = cookie_value(params, "dfid").unwrap_or_else(|| json!("-"));
+            let mid = cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null);
+            let uuid = format!("{:x}", md5::compute(format!("{}{}", js_string(&dfid), js_string(&mid))));
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v1/video")
+                    .data(json!({
+                        "appid": appid,
+                        "clientver": clientver,
+                        "clienttime": clienttime,
+                        "mid": mid,
+                        "uuid": uuid,
+                        "dfid": dfid,
+                        "token": param_or_cookie(params, "token", json!("")),
+                        "key": sign_params_key(clienttime, is_lite),
+                        "show_resolution": 1,
+                        "data": csv_objects(params, "id", "video_id"),
+                    }))
+                    .clear_default_params()
+                    .header("x-router", "kmr.service.kugou.com"),
+            )
+            .await
+        }
+        "video_privilege" => {
+            let (appid, clientver, _) = platform_config();
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v1/get_video_privilege")
+                    .data(json!({
+                        "appid": appid,
+                        "area_code": 1,
+                        "behavior": "play",
+                        "clientver": clientver,
+                        "dfid": cookie_value(params, "dfid").unwrap_or_else(|| json!("-")),
+                        "mid": cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                        "resource": Value::Array(
+                            js_string(&value_or(params, "hash", json!("")))
+                                .split(',')
+                                .map(|hash| json!({ "hash": hash, "id": 0, "name": "" }))
+                                .collect()
+                        ),
+                        "token": cookie_value(params, "token").unwrap_or_else(|| json!("")),
+                        "userid": cookie_value(params, "userid").unwrap_or_else(|| json!(0)),
+                        "vip": cookie_value(params, "vip_type").unwrap_or_else(|| json!(0)),
+                    }))
+                    .header("x-router", "media.store.kugou.com"),
+            )
+            .await
+        }
         _ => Err(format!("unknown native module: {module}")),
     }
 }
@@ -1779,7 +2709,7 @@ struct NativeRequest {
     method: Method,
     params: Map<String, Value>,
     data: Option<Value>,
-    headers: HashMap<&'static str, &'static str>,
+    headers: HashMap<String, String>,
     base_url: &'static str,
     signature: SignatureKind,
     encrypt_key: bool,
@@ -1791,6 +2721,7 @@ struct NativeRequest {
 enum SignatureKind {
     Android,
     Web,
+    None,
 }
 
 impl NativeRequest {
@@ -1831,8 +2762,8 @@ impl NativeRequest {
         self
     }
 
-    fn header(mut self, name: &'static str, value: &'static str) -> Self {
-        self.headers.insert(name, value);
+    fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(name.into(), value.into());
         self
     }
 
@@ -1843,6 +2774,11 @@ impl NativeRequest {
 
     fn web(mut self) -> Self {
         self.signature = SignatureKind::Web;
+        self
+    }
+
+    fn unsigned(mut self) -> Self {
+        self.signature = SignatureKind::None;
         self
     }
 
@@ -1915,8 +2851,13 @@ fn number_value(value: Value) -> Value {
             .trim()
             .parse::<f64>()
             .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map(Value::Number)
+            .and_then(|value| {
+                if value.fract() == 0.0 && value >= i64::MIN as f64 && value <= i64::MAX as f64 {
+                    Some(Value::Number(serde_json::Number::from(value as i64)))
+                } else {
+                    serde_json::Number::from_f64(value).map(Value::Number)
+                }
+            })
             .unwrap_or_else(|| Value::String("NaN".to_owned())),
         Value::Array(_) | Value::Object(_) => Value::String("NaN".to_owned()),
     }
@@ -1955,6 +2896,47 @@ fn csv_number_objects(params: &Value, name: &str, field: &str) -> Value {
     )
 }
 
+fn csv_hash_audio(params: &Value) -> Value {
+    let hashes = js_string(&value_or(params, "hash", json!("")));
+    Value::Array(
+        hashes
+            .split(',')
+            .map(|hash| json!({ "hash": hash, "audio_id": 0 }))
+            .collect(),
+    )
+}
+
+fn csv_hash_resource(params: &Value, name: &str, field: &str, base: Value) -> Vec<Value> {
+    let values = js_string(&value_or(params, name, json!("")));
+    values
+        .split(',')
+        .map(|value| {
+            let mut object = base.as_object().cloned().unwrap_or_default();
+            object.insert(field.to_owned(), json!(value));
+            Value::Object(object)
+        })
+        .collect()
+}
+
+fn apply_csv_field(items: &mut [Value], params: &Value, name: &str, field: &str) {
+    let values = js_string(&value_or(params, name, json!("")));
+    for (index, value) in values.split(',').enumerate() {
+        if let Some(object) = items.get_mut(index).and_then(Value::as_object_mut) {
+            object.insert(field.to_owned(), json!(value));
+        }
+    }
+}
+
+fn sorted_pairs(params: &Map<String, Value>, separator: &str) -> String {
+    let mut entries: Vec<_> = params.iter().collect();
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries
+        .into_iter()
+        .map(|(key, value)| format!("{key}={}", js_string(value)))
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
 fn number_is_zero(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Null) => true,
@@ -1963,6 +2945,13 @@ fn number_is_zero(value: Option<&Value>) -> bool {
         Some(Value::String(value)) => value.trim().parse::<f64>() == Ok(0.0),
         _ => false,
     }
+}
+
+fn unix_time_millis() -> Result<u64, String> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis() as u64)
 }
 
 fn platform_config() -> (u16, u32, bool) {
@@ -2071,11 +3060,16 @@ async fn android_request_inner(
     }
 
     let data = options.data.as_ref().map_or_else(String::new, js_string);
-    let signature = match options.signature {
-        SignatureKind::Android => signature_android(&query, &data, is_lite),
-        SignatureKind::Web => signature_web(&query),
-    };
-    query.insert("signature".to_owned(), Value::String(signature));
+    if !query.contains_key("signature") {
+        let signature = match options.signature {
+            SignatureKind::Android => Some(signature_android(&query, &data, is_lite)),
+            SignatureKind::Web => Some(signature_web(&query)),
+            SignatureKind::None => None,
+        };
+        if let Some(signature) = signature {
+            query.insert("signature".to_owned(), Value::String(signature));
+        }
+    }
 
     let mut url = Url::parse(options.base_url)
         .map_err(|error| error.to_string())?
@@ -2286,7 +3280,7 @@ mod tests {
     #[test]
     fn manifest_only_lists_implemented_handlers() {
         let modules = modules().expect("native manifest should be valid JSON");
-        assert_eq!(modules.len(), 110);
+        assert_eq!(modules.len(), 136);
         assert!(modules.iter().all(|module| supports(module)));
     }
 
@@ -2354,5 +3348,11 @@ mod tests {
             sign_params_key(1700000000000u64, true),
             "d0ea4884a9807886a7c7e582cda713fa"
         );
+    }
+
+    #[test]
+    fn js_number_conversion_keeps_integer_signature_format() {
+        assert_eq!(js_string(&number_value(json!("1"))), "1");
+        assert_eq!(js_string(&number_value(json!("1.5"))), "1.5");
     }
 }
