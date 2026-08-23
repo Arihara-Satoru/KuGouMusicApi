@@ -1,6 +1,8 @@
 use super::*;
 
 const NATIVE_MODULES: &str = include_str!("../rust-native.json");
+const STANDARD_RSA_PUBLIC_KEY: &str = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDIAG7QOELSYoIJvTFJhMpe1s/gbjDJX51HBNnEl5HXqTW6lQ7LC8jr9fWZTwusknp+sVGzwd40MwP6U5yDE27M/X1+UR4tvOGOqp94TJtQ1EPnWGWXngpeIW5GxoQGao1rmYWAu6oi1z9XkChrsUdC6DJE5E221wf/4WLFxwAtRQIDAQAB";
+const LITE_RSA_PUBLIC_KEY: &str = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDECi0Np2UR87scwrvTr72L6oO01rBbbBPriSDFPxr3Z5syug0O24QyQO8bg27+0+4kBzTBTBOZ/WWU0WryL1JSXRTXLgFVxtzIY41Pe7lPOgsfTCn5kZcvKhYKJesKnnJDNr5/abvTGf+rHG3YRwsCHcQ08/q6ifSioBszvb3QiwIDAQAB";
 
 pub fn modules() -> Result<Vec<String>, String> {
     Ok(module_manifest()?.clone())
@@ -3179,6 +3181,85 @@ pub async fn invoke(
             enrich_cloud_match(&mut response.body);
             Ok(response)
         }
+        "user_detail" => {
+            let clienttime = unix_time_millis()? / 1000;
+            let token = param_or_cookie(params, "token", json!(""));
+            let userid = number_value(param_or_cookie(params, "userid", json!("0")));
+            let p = rsa_raw_encrypt(
+                &json!({ "token": token, "clienttime": clienttime }),
+                platform_config().2,
+            )?
+            .to_uppercase();
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v3/get_my_info")
+                    .params(json!({ "plat": 1 }))
+                    .data(json!({
+                        "visit_time": clienttime,
+                        "usertype": 1,
+                        "p": p,
+                        "userid": userid,
+                    }))
+                    .header("x-router", "usercenter.kugou.com"),
+            )
+            .await
+        }
+        "user_follow" => {
+            let clienttime = unix_time_millis()? / 1000;
+            let token = param_or_cookie(params, "token", json!(""));
+            let p = rsa_raw_encrypt(
+                &json!({ "clienttime": clienttime, "token": token }),
+                platform_config().2,
+            )?
+            .to_uppercase();
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v4/follow_list")
+                    .params(json!({ "plat": 1 }))
+                    .data(json!({
+                        "merge": 2,
+                        "need_iden_type": 1,
+                        "ext_params": "k_pic,jumptype,singerid,score",
+                        "userid": param_or_cookie(params, "userid", json!("0")),
+                        "type": 0,
+                        "id_type": 0,
+                        "p": p,
+                    }))
+                    .header("x-router", "relationuser.kugou.com"),
+            )
+            .await
+        }
+        "user_listen" => {
+            let clienttime = unix_time_millis()? / 1000;
+            let token = param_or_cookie(params, "token", json!(""));
+            let userid = param_or_cookie(params, "userid", json!("0"));
+            let p = rsa_raw_encrypt(
+                &json!({ "clienttime": clienttime, "token": token }),
+                platform_config().2,
+            )?
+            .to_uppercase();
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v2/get_list")
+                    .base_url("https://listenservice.kugou.com")
+                    .params(json!({ "clienttime": clienttime, "plat": 0 }))
+                    .data(json!({
+                        "t_userid": userid,
+                        "userid": userid,
+                        "list_type": value_or(params, "type", json!(0)),
+                        "area_code": 1,
+                        "cover": 2,
+                        "p": p,
+                    })),
+            )
+            .await
+        }
         _ => Err(format!("unknown native module: {module}")),
     }
 }
@@ -3897,6 +3978,48 @@ fn sign_params_key(data: impl std::fmt::Display, is_lite: bool) -> String {
     )
 }
 
+fn rsa_raw_encrypt(data: &Value, is_lite: bool) -> Result<String, String> {
+    use rsa::{BigUint, RsaPublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts};
+
+    static STANDARD_KEY: std::sync::OnceLock<Result<RsaPublicKey, String>> =
+        std::sync::OnceLock::new();
+    static LITE_KEY: std::sync::OnceLock<Result<RsaPublicKey, String>> = std::sync::OnceLock::new();
+    let key = if is_lite {
+        LITE_KEY.get_or_init(|| {
+            let der = BASE64
+                .decode(LITE_RSA_PUBLIC_KEY)
+                .map_err(|error| error.to_string())?;
+            RsaPublicKey::from_public_key_der(&der).map_err(|error| error.to_string())
+        })
+    } else {
+        STANDARD_KEY.get_or_init(|| {
+            let der = BASE64
+                .decode(STANDARD_RSA_PUBLIC_KEY)
+                .map_err(|error| error.to_string())?;
+            RsaPublicKey::from_public_key_der(&der).map_err(|error| error.to_string())
+        })
+    }
+    .as_ref()
+    .map_err(Clone::clone)?;
+    let input = js_string(data);
+    if input.len() > key.size() {
+        return Err("Data length exceeds key size".to_owned());
+    }
+    let mut padded = vec![0; key.size()];
+    padded[..input.len()].copy_from_slice(input.as_bytes());
+    let encrypted = BigUint::from_bytes_be(&padded).modpow(key.e(), key.n());
+    let bytes = encrypted.to_bytes_be();
+    let mut output = String::with_capacity(key.size() * 2);
+    for _ in bytes.len()..key.size() {
+        output.push_str("00");
+    }
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut output, "{byte:02x}").map_err(|error| error.to_string())?;
+    }
+    Ok(output)
+}
+
 fn clean_set_cookie(value: &str) -> String {
     value
         .split(';')
@@ -3988,7 +4111,7 @@ mod tests {
     #[test]
     fn manifest_only_lists_implemented_handlers() {
         let modules = modules().expect("native manifest should be valid JSON");
-        assert_eq!(modules.len(), 146);
+        assert_eq!(modules.len(), 149);
         assert!(modules.iter().all(|module| supports(module)));
     }
 
@@ -4062,5 +4185,13 @@ mod tests {
     fn js_number_conversion_keeps_integer_signature_format() {
         assert_eq!(js_string(&number_value(json!("1"))), "1");
         assert_eq!(js_string(&number_value(json!("1.5"))), "1.5");
+    }
+
+    #[test]
+    fn raw_rsa_matches_node_vector() {
+        assert_eq!(
+            rsa_raw_encrypt(&json!({ "clienttime": 123, "token": "abc" }), true).unwrap(),
+            "780c0d073146509ecac63af3b78415ba41576dc3d9c04e4def3587e9132e30448193cd32e2dbc2ac0f7a5addfd53b4481b47f3eedc279dd7ba518131d99cb2c9db136536386fe3bf9f82a2f684ceb1da192f3e1f4768b17852de50a1fc959793da447d364c94c2f2760c605cf62577030f0db99b9591900d0350f919966e3c48"
+        );
     }
 }
