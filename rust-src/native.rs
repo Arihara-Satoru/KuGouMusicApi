@@ -2700,17 +2700,248 @@ pub async fn invoke(
             )
             .await
         }
+        "brush" => {
+            let (appid, _, is_lite) = platform_config();
+            let clienttime = unix_time_millis()?;
+            let userid = cookie_or_param(params, "userid", json!(0));
+            let vip_type = cookie_value(params, "vip_type")
+                .filter(truthy)
+                .unwrap_or_else(|| value_or(params, "vipType", json!(0)));
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/genesisapi/v1/newepoch_song_rec/feed")
+                    .params(json!({
+                        "sort_type": 1,
+                        "platform": "ios",
+                        "page": 1,
+                        "content_ver": 4,
+                        "clientver": 11850,
+                    }))
+                    .data(json!({
+                        "behaviors": [],
+                        "abtest": { "abtest": { "shuashua": { "commentcard": 2 } } },
+                        "personal_recommend_params": {
+                            "userid": userid,
+                            "appid": appid,
+                            "playlist_ver": 2,
+                            "clienttime": clienttime,
+                            "mid": cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                            "new_sync_point": clienttime,
+                            "module_id": 1,
+                            "action": "login",
+                            "vip_type": vip_type,
+                            "vip_flags": 3,
+                            "recommend_source_locked": 0,
+                            "song_pool_id": number_value(value_or(params, "song_pool_id", json!(0))),
+                            "callerid": 0,
+                            "m_type": 1,
+                            "kguid": userid,
+                            "platform": "ios",
+                            "area_code": 1,
+                            "fakem": "ca981cfc583a4c37f28d2d49000013c16a0a",
+                            "clientver": 11850,
+                            "mode": value_or(params, "mode", json!("normal")),
+                            "active_swtich": "on",
+                            "key": sign_params_key(clienttime, is_lite),
+                        },
+                    })),
+            )
+            .await
+        }
+        "comment_floor" => {
+            let resource_type = params
+                .get("resource_type")
+                .filter(|value| truthy(value))
+                .or_else(|| params.get("resourceType").filter(|value| truthy(value)))
+                .map(js_string)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let song_code = "fc4be23b4e972707f36b8a828a93ba8a";
+            let playlist_code = "ca53b96fe5a1d9c22d71c8f522ef7c4f";
+            let album_code = "94f1792ced1df89aa68a7939eaf2efca";
+            let code = params
+                .get("code")
+                .filter(|value| nonempty(value))
+                .map(js_string)
+                .unwrap_or_else(|| match resource_type.as_str() {
+                    "playlist" => playlist_code.to_owned(),
+                    "album" => album_code.to_owned(),
+                    _ => song_code.to_owned(),
+                });
+            let service = matches!(resource_type.as_str(), "playlist" | "album")
+                || code == playlist_code
+                || code == album_code;
+            let mut query = Map::from_iter([
+                ("childrenid".to_owned(), value(params, "special_id")),
+                ("need_show_image".to_owned(), json!(1)),
+                ("p".to_owned(), value_or(params, "page", json!(1))),
+                (
+                    "pagesize".to_owned(),
+                    value_or(params, "pagesize", json!(30)),
+                ),
+                (
+                    "show_classify".to_owned(),
+                    value_nullish(params, "show_classify", json!(1)),
+                ),
+                (
+                    "show_hotword_list".to_owned(),
+                    value_nullish(params, "show_hotword_list", json!(1)),
+                ),
+                ("code".to_owned(), json!(code)),
+                ("tid".to_owned(), value(params, "tid")),
+            ]);
+            if let Some(mixsongid) = params.get("mixsongid").filter(|value| nonempty(value)) {
+                query.insert("mixsongid".to_owned(), mixsongid.clone());
+            }
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post(if service {
+                    "/m.comment.service/v1/hot_replylist"
+                } else {
+                    "/mcomment/v1/hot_replylist"
+                })
+                .params(Value::Object(query)),
+            )
+            .await
+        }
+        "images" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let mut data = csv_hash_resource(
+                params,
+                "hash",
+                "hash",
+                json!({ "album_id": 0, "album_audio_id": 0 }),
+            );
+            apply_csv_field_or_zero(&mut data, params, "album_id", "album_id");
+            apply_csv_field_or_zero(&mut data, params, "album_audio_id", "album_audio_id");
+            let query = Map::from_iter([
+                ("album_image_type".to_owned(), json!("-3")),
+                ("appid".to_owned(), json!(appid)),
+                ("clientver".to_owned(), json!(clientver)),
+                ("author_image_type".to_owned(), json!("3,4,5")),
+                ("count".to_owned(), value_or(params, "count", json!(5))),
+                ("data".to_owned(), Value::Array(data)),
+                ("isCdn".to_owned(), json!(1)),
+                ("publish_time".to_owned(), json!(1)),
+            ]);
+            let signature = signature_android(&query, "", is_lite);
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get(path_with_query("/container/v2/image", &query))
+                    .base_url("https://expendablekmr.kugou.com")
+                    .params(json!({ "signature": signature }))
+                    .clear_default_params(),
+            )
+            .await
+        }
+        "images_audio" => {
+            let (appid, clientver, is_lite) = platform_config();
+            let mut data = csv_hash_resource(
+                params,
+                "hash",
+                "hash",
+                json!({ "audio_id": 0, "album_audio_id": 0, "filename": "" }),
+            );
+            apply_csv_field_or_zero(&mut data, params, "audio_id", "audio_id");
+            apply_csv_field_or_zero(&mut data, params, "album_audio_id", "album_audio_id");
+            apply_csv_field(&mut data, params, "filename", "filename");
+            let query = Map::from_iter([
+                ("appid".to_owned(), json!(appid)),
+                ("clientver".to_owned(), json!(clientver)),
+                ("count".to_owned(), value_or(params, "count", json!(5))),
+                ("data".to_owned(), Value::Array(data)),
+                ("isCdn".to_owned(), json!(1)),
+                ("publish_time".to_owned(), json!(1)),
+                ("show_authors".to_owned(), json!(1)),
+            ]);
+            let signature = signature_android(&query, "", is_lite);
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get(path_with_query("/v2/author_image/audio", &query))
+                    .base_url("https://expendablekmr.kugou.com")
+                    .params(json!({ "signature": signature }))
+                    .clear_default_params(),
+            )
+            .await
+        }
+        "ip_zone" => {
+            let mut response = android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get("/v1/zone/index")
+                    .header("x-router", "yuekucategory.kugou.com"),
+            )
+            .await?;
+            enrich_ip_zone(&mut response.body);
+            Ok(response)
+        }
+        "top_ip" => {
+            let mut response = android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v1/daily_recommend")
+                    .base_url("http://musicadservice.kugou.com")
+                    .params(json!({ "clientver": 12349, "area_code": 1 }))
+                    .data(json!({ "tags": {} })),
+            )
+            .await?;
+            enrich_top_ip(&mut response.body);
+            Ok(response)
+        }
+        "user_cloud_url" => {
+            let hash = params
+                .get("hash")
+                .map(js_string)
+                .unwrap_or_else(|| "undefined".to_owned())
+                .to_lowercase();
+            let key = format!(
+                "{:x}",
+                md5::compute(format!(
+                    "musicclound{hash}20026ebd1ac3134c880bda6a2194537843caa0162e2e7"
+                ))
+            );
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get("/bsstrackercdngz/v2/query_musicclound_url").params(json!({
+                    "hash": hash,
+                    "ssa_flag": "is_fromtrack",
+                    "version": "20102",
+                    "ssl": 0,
+                    "album_audio_id": value_nullish(params, "album_audio_id", json!(0)),
+                    "pid": 20026,
+                    "audio_id": value_nullish(params, "audio_id", json!(0)),
+                    "kv_id": 2,
+                    "key": key,
+                    "bucket": "musicclound",
+                    "name": value_nullish(params, "name", json!("")),
+                    "with_res_tag": 0,
+                })),
+            )
+            .await
+        }
         _ => Err(format!("unknown native module: {module}")),
     }
 }
 
 struct NativeRequest {
-    url: &'static str,
+    url: String,
     method: Method,
     params: Map<String, Value>,
     data: Option<Value>,
     headers: HashMap<String, String>,
-    base_url: &'static str,
+    base_url: String,
     signature: SignatureKind,
     encrypt_key: bool,
     use_input_cookie: bool,
@@ -2725,26 +2956,26 @@ enum SignatureKind {
 }
 
 impl NativeRequest {
-    fn get(url: &'static str) -> Self {
+    fn get(url: impl Into<String>) -> Self {
         Self::new(url, Method::GET)
     }
 
-    fn post(url: &'static str) -> Self {
+    fn post(url: impl Into<String>) -> Self {
         Self::new(url, Method::POST)
     }
 
-    fn delete(url: &'static str) -> Self {
+    fn delete(url: impl Into<String>) -> Self {
         Self::new(url, Method::DELETE)
     }
 
-    fn new(url: &'static str, method: Method) -> Self {
+    fn new(url: impl Into<String>, method: Method) -> Self {
         Self {
-            url,
+            url: url.into(),
             method,
             params: Map::new(),
             data: None,
             headers: HashMap::new(),
-            base_url: "https://gateway.kugou.com",
+            base_url: "https://gateway.kugou.com".to_owned(),
             signature: SignatureKind::Android,
             encrypt_key: false,
             use_input_cookie: true,
@@ -2767,8 +2998,8 @@ impl NativeRequest {
         self
     }
 
-    fn base_url(mut self, base_url: &'static str) -> Self {
-        self.base_url = base_url;
+    fn base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
         self
     }
 
@@ -2927,6 +3158,107 @@ fn apply_csv_field(items: &mut [Value], params: &Value, name: &str, field: &str)
     }
 }
 
+fn apply_csv_field_or_zero(items: &mut [Value], params: &Value, name: &str, field: &str) {
+    let values = js_string(&value_or(params, name, json!("")));
+    for (index, value) in values.split(',').enumerate() {
+        if let Some(object) = items.get_mut(index).and_then(Value::as_object_mut) {
+            object.insert(
+                field.to_owned(),
+                if value.is_empty() {
+                    json!(0)
+                } else {
+                    json!(value)
+                },
+            );
+        }
+    }
+}
+
+fn nonempty(value: &Value) -> bool {
+    let value = js_string(value);
+    let value = value.trim();
+    !value.is_empty() && value != "null" && value != "undefined"
+}
+
+fn path_with_query(path: &str, params: &Map<String, Value>) -> String {
+    let mut entries: Vec<_> = params.iter().collect();
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    for (name, value) in entries {
+        query.append_pair(name, &js_string(value));
+    }
+    format!("{path}?{}", query.finish())
+}
+
+fn query_value(query: &str, name: &str) -> Option<String> {
+    url::form_urlencoded::parse(query.trim_start_matches('?').as_bytes())
+        .find_map(|(key, value)| (key == name).then(|| value.into_owned()))
+}
+
+fn enrich_ip_zone(body: &mut Value) {
+    if body.get("status").and_then(Value::as_i64) != Some(1) {
+        return;
+    }
+    let Some(list_value) = body
+        .get_mut("data")
+        .and_then(Value::as_object_mut)
+        .and_then(|data| data.get_mut("list"))
+        .filter(|value| truthy(value))
+    else {
+        return;
+    };
+    let mut list = list_value.as_array().cloned().unwrap_or_default();
+    for item in &mut list {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        let Some(link) = object.get("special_link").filter(|value| truthy(value)) else {
+            continue;
+        };
+        let Some(path) = query_value(&js_string(link), "path") else {
+            continue;
+        };
+        let Some(ip_id) = query_value(&path, "ip_id") else {
+            continue;
+        };
+        object.insert("ip_id".to_owned(), number_value(json!(ip_id)));
+    }
+    *list_value = Value::Array(list);
+}
+
+fn enrich_top_ip(body: &mut Value) {
+    if body.get("status").and_then(Value::as_i64) != Some(1) {
+        return;
+    }
+    let Some(list_value) = body
+        .get_mut("data")
+        .and_then(Value::as_object_mut)
+        .and_then(|data| data.get_mut("list"))
+    else {
+        return;
+    };
+    let mut list = list_value.as_array().cloned().unwrap_or_default();
+    for item in &mut list {
+        let Some(extra) = item
+            .as_object_mut()
+            .and_then(|item| item.get_mut("extra"))
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        let Some(inner_url) = extra.get("inner_url").filter(|value| truthy(value)) else {
+            continue;
+        };
+        let inner_url = js_string(inner_url);
+        let Some(index) = inner_url.rfind("ip_id") else {
+            continue;
+        };
+        let value = inner_url.get(index + 6..).unwrap_or_default();
+        extra.insert("ip_id".to_owned(), number_value(json!(value)));
+    }
+    *list_value = Value::Array(list);
+}
+
 fn sorted_pairs(params: &Map<String, Value>, separator: &str) -> String {
     let mut entries: Vec<_> = params.iter().collect();
     entries.sort_by(|(left, _), (right, _)| left.cmp(right));
@@ -3071,9 +3403,9 @@ async fn android_request_inner(
         }
     }
 
-    let mut url = Url::parse(options.base_url)
+    let mut url = Url::parse(&options.base_url)
         .map_err(|error| error.to_string())?
-        .join(options.url)
+        .join(&options.url)
         .map_err(|error| error.to_string())?;
     append_query(&mut url, &query);
     let mut request = client.request(options.method, url);
@@ -3280,7 +3612,7 @@ mod tests {
     #[test]
     fn manifest_only_lists_implemented_handlers() {
         let modules = modules().expect("native manifest should be valid JSON");
-        assert_eq!(modules.len(), 136);
+        assert_eq!(modules.len(), 143);
         assert!(modules.iter().all(|module| supports(module)));
     }
 
