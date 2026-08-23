@@ -901,6 +901,38 @@ pub async fn invoke(
             )
             .await
         }
+        "login_qr_check" => {
+            let mut response = android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get("/v2/get_userinfo_qrcode")
+                    .base_url("https://login-user.kugou.com")
+                    .params(json!({
+                        "plat": 4,
+                        "appid": platform_config().0,
+                        "srcappid": 2919,
+                        "qrcode": value(params, "key"),
+                    }))
+                    .web(),
+            )
+            .await?;
+            if response
+                .body
+                .pointer("/data/status")
+                .is_some_and(|value| number_value(value.clone()).as_i64() == Some(4))
+            {
+                if let Some(token) = response.body.pointer("/data/token") {
+                    response.cookie.push(format!("token={}", js_string(token)));
+                }
+                if let Some(userid) = response.body.pointer("/data/userid") {
+                    response
+                        .cookie
+                        .push(format!("userid={}", js_string(userid)));
+                }
+            }
+            Ok(response)
+        }
         "login_wx_check" => login_wx_check(client, params).await,
         "lastest_songs_listen" => {
             android_request(
@@ -1467,6 +1499,118 @@ pub async fn invoke(
                         "pagesize": value_or(params, "pagesize", json!(30)),
                     }),
                 ),
+            )
+            .await
+        }
+        "song_url" => {
+            let is_lite = platform_config().2;
+            let quality = params
+                .get("quality")
+                .filter(|value| truthy(value))
+                .map(js_string)
+                .map(|quality| {
+                    if ["piano", "acappella", "subwoofer", "ancient", "dj", "surnay"]
+                        .contains(&quality.as_str())
+                    {
+                        json!(format!("magic_{quality}"))
+                    } else {
+                        json!(quality)
+                    }
+                })
+                .unwrap_or_else(|| json!(128));
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get("/v5/url")
+                    .params(json!({
+                        "album_id": number_value(value_nullish(params, "album_id", json!(0))),
+                        "area_code": 1,
+                        "hash": js_string(&value_or(params, "hash", json!(""))).to_lowercase(),
+                        "ssa_flag": "is_fromtrack",
+                        "version": 11430,
+                        "page_id": if is_lite { 967177915 } else { 151369488 },
+                        "quality": quality,
+                        "album_audio_id": number_value(value_nullish(params, "album_audio_id", json!(0))),
+                        "behavior": "play",
+                        "pid": if is_lite { 411 } else { 2 },
+                        "cmd": 26,
+                        "pidversion": 3001,
+                        "IsFreePart": u8::from(params.get("free_part").is_some_and(truthy)),
+                        "ppage_id": if is_lite {
+                            value_or(params, "ppage_id", json!("356753938,823673182,967485191"))
+                        } else {
+                            json!("463467626,350369493,788954147")
+                        },
+                        "cdnBackup": 1,
+                        "module": "",
+                        "clientver": 11430,
+                    }))
+                    .encrypt_key()
+                    .header("x-router", "trackercdn.kugou.com"),
+            )
+            .await
+        }
+        "song_url_new" => {
+            let (appid, _, _) = platform_config();
+            let clienttime = unix_time_millis()?;
+            let userid = number_value(param_or_cookie(params, "userid", json!("0")));
+            let hash = params
+                .get("hash")
+                .filter(|value| truthy(value))
+                .or_else(|| params.get("file_hash").filter(|value| truthy(value)))
+                .or_else(|| params.get("FileHash").filter(|value| truthy(value)))
+                .map(js_string)
+                .unwrap_or_default();
+            let mid = cookie_value(params, "KUGOU_API_MID")
+                .map(|value| js_string(&value))
+                .unwrap_or_else(|| "undefined".to_owned());
+            let tracker_key = format!(
+                "{:x}",
+                md5::compute(format!(
+                    "{hash}185672dd44712f60bb1736df5a377e82{appid}{mid}{}",
+                    js_string(&userid)
+                ))
+            );
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v6/priv_url")
+                    .base_url("http://tracker.kugou.com")
+                    .data(json!({
+                        "area_code": "1",
+                        "behavior": "play",
+                        "qualities": ["128", "320", "flac", "high", "multitrack", "viper_atmos", "viper_tape", "viper_clear", "super"],
+                        "resource": {
+                            "album_audio_id": value(params, "album_audio_id"),
+                            "collect_list_id": "3",
+                            "collect_time": clienttime,
+                            "hash": hash,
+                            "id": 0,
+                            "page_id": 1,
+                            "type": "audio",
+                        },
+                        "token": param_or_cookie(params, "token", json!("")),
+                        "tracker_param": {
+                            "all_m": 1,
+                            "auth": "",
+                            "is_free_part": u8::from(params.get("free_part").is_some_and(truthy)),
+                            "key": tracker_key,
+                            "module_id": 0,
+                            "need_climax": 1,
+                            "need_xcdn": 1,
+                            "open_time": "",
+                            "pid": "411",
+                            "pidversion": "3001",
+                            "priv_vip_type": "6",
+                            "viptoken": param_or_cookie(params, "vip_token", json!("")),
+                        },
+                        "userid": js_string(&userid),
+                        "vip": cookie_value(params, "vip_type")
+                            .filter(truthy)
+                            .unwrap_or_else(|| value_or(params, "vipType", json!(0))),
+                    })),
             )
             .await
         }
@@ -2931,6 +3075,91 @@ pub async fn invoke(
             )
             .await
         }
+        "user_cloud_match" => {
+            let (default_appid, default_clientver, is_lite) = platform_config();
+            let request_appid = value_or(params, "appid", json!(default_appid));
+            let request_clientver = value_or(params, "clientver", json!(default_clientver));
+            let clienttime = unix_time_millis()? / 1000;
+            let hashes = split_values(value(params, "hash"));
+            if hashes.is_empty() {
+                return Ok(ModuleResponse {
+                    status: 500,
+                    body: json!({ "status": 0, "msg": "请传入 hash，或通过请求体传入文件二进制数据" }),
+                    cookie: Vec::new(),
+                    headers: HashMap::new(),
+                });
+            }
+            let album_audio_ids = split_values(
+                params
+                    .get("album_audio_ids")
+                    .filter(|value| truthy(value))
+                    .or_else(|| params.get("album_audio_id").filter(|value| truthy(value)))
+                    .or_else(|| params.get("mixid").filter(|value| truthy(value)))
+                    .or_else(|| params.get("mix_id").filter(|value| truthy(value)))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            let data = hashes
+                .iter()
+                .enumerate()
+                .map(|(index, hash)| {
+                    let mut item = Map::from_iter([(
+                        "hash".to_owned(),
+                        json!(hash.to_ascii_lowercase()),
+                    )]);
+                    if let Some(album_audio_id) = album_audio_ids
+                        .get(index)
+                        .or_else(|| album_audio_ids.first())
+                        .filter(|value| value.parse::<f64>().is_ok_and(|value| value > 0.0))
+                    {
+                        item.insert("album_audio_id".to_owned(), json!(album_audio_id));
+                    }
+                    Value::Object(item)
+                })
+                .collect::<Vec<_>>();
+            let salt = if is_lite {
+                "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA"
+            } else {
+                "OIlwieks28dk2k092lksi2UIkp"
+            };
+            let key = format!(
+                "{:x}",
+                md5::compute(format!(
+                    "{}{salt}{}{clienttime}",
+                    js_string(&request_appid),
+                    js_string(&request_clientver)
+                ))
+            );
+            let mut response = android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v2/album_audio/audio")
+                    .base_url("http://kmr.service.kugou.com")
+                    .data(json!({
+                        "appid": request_appid,
+                        "clienttime": clienttime,
+                        "clientver": request_clientver,
+                        "data": data,
+                        "dfid": cookie_or_param(params, "dfid", json!("-")),
+                        "key": key,
+                        "mid": cookie_value(params, "KUGOU_API_MID")
+                            .filter(truthy)
+                            .unwrap_or_else(|| value_or(params, "mid", json!(""))),
+                        "show_privilege": 0,
+                        "show_author_alias": 0,
+                        "show_rel_album_audio_info": 0,
+                        "show_remarks": 0,
+                    }))
+                    .clear_default_params()
+                    .unsigned()
+                    .header("x-router", "kmr.service.kugou.com")
+                    .header("Content-Type", "application/json"),
+            )
+            .await?;
+            enrich_cloud_match(&mut response.body);
+            Ok(response)
+        }
         _ => Err(format!("unknown native module: {module}")),
     }
 }
@@ -3195,6 +3424,92 @@ fn query_value(query: &str, name: &str) -> Option<String> {
         .find_map(|(key, value)| (key == name).then(|| value.into_owned()))
 }
 
+fn split_values(value: Value) -> Vec<String> {
+    match value {
+        Value::Null => Vec::new(),
+        Value::Array(values) => values
+            .into_iter()
+            .flat_map(|value| {
+                js_string(&value)
+                    .split(',')
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .collect(),
+        value => js_string(&value)
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    }
+}
+
+fn enrich_cloud_match(body: &mut Value) {
+    if body.get("status").and_then(Value::as_i64) != Some(1) {
+        return;
+    }
+    let Some(data) = body.get("data").and_then(Value::as_array).cloned() else {
+        return;
+    };
+    let matches = data
+        .iter()
+        .filter_map(|item| item.as_array().and_then(|items| items.first()).unwrap_or(item).as_object())
+        .filter_map(|candidate| {
+            let audio_info = candidate.get("audio_info").and_then(Value::as_object);
+            let album_audio_id = number_value(
+                candidate
+                    .get("album_audio_id")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            let audio_id = number_value(
+                audio_info
+                    .and_then(|info| info.get("audio_id"))
+                    .or_else(|| candidate.get("audio_id"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            let hash = audio_info
+                .and_then(|info| info.get("hash"))
+                .filter(|value| truthy(value))
+                .or_else(|| candidate.get("hash").filter(|value| truthy(value)))
+                .cloned()
+                .unwrap_or_else(|| json!(""));
+            if number_is_zero(Some(&album_audio_id))
+                && number_is_zero(Some(&audio_id))
+                && !truthy(&hash)
+            {
+                return None;
+            }
+            let audio_name = ["ori_audio_name", "audio_name", "songname"]
+                .into_iter()
+                .find_map(|name| candidate.get(name).filter(|value| truthy(value)).cloned())
+                .unwrap_or_else(|| json!(""));
+            Some(json!({
+                "album_audio_id": album_audio_id,
+                "audio_id": audio_id,
+                "hash_std": hash,
+                "hash": hash,
+                "author_name": candidate.get("author_name").filter(|value| truthy(value)).cloned().unwrap_or_else(|| json!("")),
+                "audio_name": audio_name,
+                "suffix_audio_name": candidate.get("suffix_audio_name").filter(|value| truthy(value)).cloned().unwrap_or_else(|| json!("")),
+                "album_info": candidate.get("album_info").cloned().unwrap_or(Value::Null),
+                "raw": Value::Object(candidate.clone()),
+            }))
+        })
+        .collect::<Vec<_>>();
+    if let Some(object) = body.as_object_mut() {
+        object.insert("match_list".to_owned(), json!(matches));
+        object.insert(
+            "match".to_owned(),
+            matches.first().cloned().unwrap_or(Value::Null),
+        );
+    }
+}
+
 fn enrich_ip_zone(body: &mut Value) {
     if body.get("status").and_then(Value::as_i64) != Some(1) {
         return;
@@ -3413,6 +3728,10 @@ async fn android_request_inner(
         request = request.header(name, value);
     }
     request = request
+        .header(
+            header::USER_AGENT,
+            "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi",
+        )
         .header("dfid", &dfid)
         .header("clienttime", clienttime)
         .header("mid", &mid)
@@ -3612,7 +3931,7 @@ mod tests {
     #[test]
     fn manifest_only_lists_implemented_handlers() {
         let modules = modules().expect("native manifest should be valid JSON");
-        assert_eq!(modules.len(), 143);
+        assert_eq!(modules.len(), 145);
         assert!(modules.iter().all(|module| supports(module)));
     }
 
