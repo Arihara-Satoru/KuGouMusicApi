@@ -3,6 +3,7 @@ use super::*;
 const NATIVE_MODULES: &str = include_str!("../rust-native.json");
 const STANDARD_RSA_PUBLIC_KEY: &str = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDIAG7QOELSYoIJvTFJhMpe1s/gbjDJX51HBNnEl5HXqTW6lQ7LC8jr9fWZTwusknp+sVGzwd40MwP6U5yDE27M/X1+UR4tvOGOqp94TJtQ1EPnWGWXngpeIW5GxoQGao1rmYWAu6oi1z9XkChrsUdC6DJE5E221wf/4WLFxwAtRQIDAQAB";
 const LITE_RSA_PUBLIC_KEY: &str = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDECi0Np2UR87scwrvTr72L6oO01rBbbBPriSDFPxr3Z5syug0O24QyQO8bg27+0+4kBzTBTBOZ/WWU0WryL1JSXRTXLgFVxtzIY41Pe7lPOgsfTCn5kZcvKhYKJesKnnJDNr5/abvTGf+rHG3YRwsCHcQ08/q6ifSioBszvb3QiwIDAQAB";
+const SSA_RSA_PUBLIC_KEY: &str = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoW2+Ylo8ALePSQTP0xBFlFmEOHvBD9tS+s7DBlfKEu3RzzvZTaX1JtYbX4+AVUqj6ARz8IM+CKByqGFvbHN/W64XxNI+q7z36ajCL3VTJ2W5G9MCJitc6oGbire4NQfhaEq0nC+hxBWQvCbIFflA2ItrLUbSU7z1bHA/a+jlQm4OWvY+IKnTryOJTPuT1yNOVjbJ8wBLKy2DgQr9pPqWPmEQtGpR5IM9V8Kao6PaSdKYOWGbX3i2+RzIKhvZUxxtJwdVbqPlDPlW9h4/xIBc56Lgvr4aIl8nFtwbj4UJVUTFuGrs0tY9H/tXvZ22dUCKuGxW/gW7ZF+gXz6vHtYarQIDAQAB";
 
 pub fn modules() -> Result<Vec<String>, String> {
     Ok(module_manifest()?.clone())
@@ -1893,8 +1894,27 @@ pub async fn invoke(
             )
             .await
         }
+        "sidedt" => {
+            let mid = param_or_cookie(params, "mid", json!("0"));
+            let userid = param_or_cookie(params, "userid", json!("0"));
+            let dfid = param_or_cookie(params, "dfid", json!("0"));
+            let webgl = cookie_value(params, "KUGOU_API_WEBGL").map(|value| js_string(&value));
+            let (edt, sid) = generate_simulate(
+                &js_string(&mid),
+                &js_string(&userid),
+                &js_string(&dfid),
+                webgl.as_deref(),
+            )?;
+            let mut verified = params.as_object().cloned().unwrap_or_default();
+            verified.insert("edt".to_owned(), json!(edt));
+            verified.insert("sid".to_owned(), json!(sid));
+            verify_user_info_request(client, &Value::Object(verified), ip).await
+        }
         "song_url" => {
             let is_lite = platform_config().2;
+            let dfid = cookie_value(params, "dfid")
+                .map(|value| js_string(&value))
+                .unwrap_or_else(|| random_uppercase_digits(24));
             let quality = params
                 .get("quality")
                 .filter(|value| truthy(value))
@@ -1938,6 +1958,7 @@ pub async fn invoke(
                         "clientver": 11430,
                     }))
                     .encrypt_key()
+                    .dfid(dfid)
                     .header("x-router", "trackercdn.kugou.com"),
             )
             .await
@@ -2001,7 +2022,12 @@ pub async fn invoke(
                         "vip": cookie_value(params, "vip_type")
                             .filter(truthy)
                             .unwrap_or_else(|| value_or(params, "vipType", json!(0))),
-                    })),
+                    }))
+                    .dfid(
+                        cookie_value(params, "dfid")
+                            .map(|value| js_string(&value))
+                            .unwrap_or_else(|| random_uppercase_digits(24)),
+                    ),
             )
             .await
         }
@@ -3279,62 +3305,7 @@ pub async fn invoke(
             )
             .await
         }
-        "verify_user_info" => {
-            let v_type = number_value(value_or(params, "v_type", json!(23)));
-            let mut data = Map::from_iter([
-                (
-                    "userid".to_owned(),
-                    number_value(param_or_cookie(params, "userid", json!("0"))),
-                ),
-                ("platid".to_owned(), value_or(params, "platid", json!(2))),
-                ("v_type".to_owned(), v_type.clone()),
-                ("wasm".to_owned(), json!(1)),
-                ("i".to_owned(), json!("")),
-                ("sid".to_owned(), value_or(params, "sid", json!(""))),
-                ("edt".to_owned(), value_or(params, "edt", json!(""))),
-            ]);
-            if let Some(eventid) = params.get("eventid") {
-                data.insert("eventid".to_owned(), eventid.clone());
-            }
-            if v_type.as_i64() == Some(23) {
-                let (aes_key, encrypted_params) = aes_encrypt_random(&json!({}))?;
-                data.insert(
-                    "verifycode".to_owned(),
-                    value_or(params, "verifycode", json!("")),
-                );
-                data.insert(
-                    "pk".to_owned(),
-                    json!(rsa_raw_encrypt(
-                        &json!({ "key": aes_key }),
-                        platform_config().2
-                    )?),
-                );
-                data.insert("params".to_owned(), json!(encrypted_params));
-            } else if v_type.as_i64() == Some(32) {
-                let code = value_or(params, "verifycode", json!(""));
-                let (aes_key, encrypted_params) =
-                    aes_encrypt_random(&json!({ "code": code }))?;
-                data.insert("code".to_owned(), code);
-                data.insert(
-                    "pk".to_owned(),
-                    json!(rsa_raw_encrypt(
-                        &json!({ "key": aes_key }),
-                        platform_config().2
-                    )?),
-                );
-                data.insert("params".to_owned(), json!(encrypted_params));
-            }
-            android_request(
-                client,
-                params,
-                ip,
-                NativeRequest::post("/v4/verify_user_info")
-                    .base_url("https://verifyservice.kugou.com")
-                    .params(json!({ "clientver": 11510 }))
-                    .data(Value::Object(data)),
-            )
-            .await
-        }
+        "verify_user_info" => verify_user_info_request(client, params, ip).await,
         "brush" => {
             let (appid, _, is_lite) = platform_config();
             let clienttime = unix_time_millis()?;
@@ -3871,6 +3842,7 @@ struct NativeRequest {
     use_input_cookie: bool,
     clear_default_params: bool,
     playlist_response: Option<(String, bool)>,
+    dfid: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -3907,6 +3879,7 @@ impl NativeRequest {
             use_input_cookie: true,
             clear_default_params: false,
             playlist_response: None,
+            dfid: None,
         }
     }
 
@@ -3962,6 +3935,11 @@ impl NativeRequest {
 
     fn decrypt_playlist_response(mut self, key: String, fallback: bool) -> Self {
         self.playlist_response = Some((key, fallback));
+        self
+    }
+
+    fn dfid(mut self, dfid: String) -> Self {
+        self.dfid = Some(dfid);
         self
     }
 }
@@ -4447,6 +4425,66 @@ fn platform_config() -> (u16, u32, bool) {
     }
 }
 
+async fn verify_user_info_request(
+    client: &Client,
+    params: &Value,
+    ip: IpAddr,
+) -> Result<ModuleResponse, String> {
+    let v_type = number_value(value_or(params, "v_type", json!(23)));
+    let mut data = Map::from_iter([
+        (
+            "userid".to_owned(),
+            number_value(param_or_cookie(params, "userid", json!("0"))),
+        ),
+        ("platid".to_owned(), value_or(params, "platid", json!(2))),
+        ("v_type".to_owned(), v_type.clone()),
+        ("wasm".to_owned(), json!(1)),
+        ("i".to_owned(), json!("")),
+        ("sid".to_owned(), value_or(params, "sid", json!(""))),
+        ("edt".to_owned(), value_or(params, "edt", json!(""))),
+    ]);
+    if let Some(eventid) = params.get("eventid") {
+        data.insert("eventid".to_owned(), eventid.clone());
+    }
+    if v_type.as_i64() == Some(23) {
+        let (aes_key, encrypted_params) = aes_encrypt_random(&json!({}))?;
+        data.insert(
+            "verifycode".to_owned(),
+            value_or(params, "verifycode", json!("")),
+        );
+        data.insert(
+            "pk".to_owned(),
+            json!(rsa_raw_encrypt(
+                &json!({ "key": aes_key }),
+                platform_config().2
+            )?),
+        );
+        data.insert("params".to_owned(), json!(encrypted_params));
+    } else if v_type.as_i64() == Some(32) {
+        let code = value_or(params, "verifycode", json!(""));
+        let (aes_key, encrypted_params) = aes_encrypt_random(&json!({ "code": code }))?;
+        data.insert("code".to_owned(), code);
+        data.insert(
+            "pk".to_owned(),
+            json!(rsa_raw_encrypt(
+                &json!({ "key": aes_key }),
+                platform_config().2
+            )?),
+        );
+        data.insert("params".to_owned(), json!(encrypted_params));
+    }
+    android_request(
+        client,
+        params,
+        ip,
+        NativeRequest::post("/v4/verify_user_info")
+            .base_url("https://verifyservice.kugou.com")
+            .params(json!({ "clientver": 11510 }))
+            .data(Value::Object(data)),
+    )
+    .await
+}
+
 async fn android_request(
     client: &Client,
     input: &Value,
@@ -4476,11 +4514,13 @@ async fn android_request_inner(
     } else {
         Map::new()
     };
-    let dfid = cookie
-        .get("dfid")
-        .filter(|value| truthy(value))
-        .map(js_string)
-        .unwrap_or_else(|| "-".to_owned());
+    let dfid = options.dfid.clone().unwrap_or_else(|| {
+        cookie
+            .get("dfid")
+            .filter(|value| truthy(value))
+            .map(js_string)
+            .unwrap_or_else(|| "-".to_owned())
+    });
     let mid = cookie
         .get("KUGOU_API_MID")
         .map(js_string)
@@ -4518,7 +4558,7 @@ async fn android_request_inner(
         query.insert("token".to_owned(), Value::String(token));
     }
     if !options.clear_default_params && truthy(&userid) {
-        query.insert("userid".to_owned(), userid);
+        query.insert("userid".to_owned(), userid.clone());
     }
     query.extend(options.params);
 
@@ -4629,7 +4669,13 @@ async fn android_request_inner(
     {
         headers.insert("ssa-code".to_owned(), json!(ssa_code));
         if let Some(object) = body.as_object_mut() {
-            // ponytail: authenticated modules stay on JS until the SSA fingerprint generator is ported.
+            let webgl = cookie
+                .get("KUGOU_API_WEBGL")
+                .filter(|value| truthy(value))
+                .map(js_string);
+            let (edt, sid) = generate_simulate(&mid, &js_string(&userid), &dfid, webgl.as_deref())?;
+            object.insert("edt".to_owned(), json!(edt));
+            object.insert("sid".to_owned(), json!(sid));
             object.insert("ssaCode".to_owned(), json!(ssa_code));
         }
     }
@@ -4873,6 +4919,126 @@ fn aes_encrypt_random(data: &Value) -> Result<(String, String), String> {
     Ok((temporary_key, aes_encrypt_with_key(data, &key, iv)?))
 }
 
+fn ssa_public_key() -> Result<&'static rsa::RsaPublicKey, String> {
+    use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
+
+    static KEY: std::sync::OnceLock<Result<RsaPublicKey, String>> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let der = BASE64
+            .decode(SSA_RSA_PUBLIC_KEY)
+            .map_err(|error| error.to_string())?;
+        RsaPublicKey::from_public_key_der(&der).map_err(|error| error.to_string())
+    })
+    .as_ref()
+    .map_err(Clone::clone)
+}
+
+fn ssa_encrypt_plaintext(plaintext: &str, key: &str) -> Result<String, String> {
+    Ok(BASE64.encode(aes_cbc_encrypt(
+        plaintext.as_bytes(),
+        key,
+        "kugousecurity123",
+    )?))
+}
+
+fn generate_simulate(
+    mid: &str,
+    userid: &str,
+    dfid: &str,
+    webgl: Option<&str>,
+) -> Result<(String, String), String> {
+    use rsa::Oaep;
+    use sha2::Sha256;
+
+    let mut random = rand::rng();
+    let key = format!("{:x}", md5::compute(random_uppercase_digits(16)))[..16].to_owned();
+    let sentinel = u32::MAX - random.random_range(0..20);
+    let points = random.random_range(30..=60);
+    let start_x = random.random_range(200..=600);
+    let start_y = random.random_range(200..=500);
+    let end_x = random.random_range(500..=700);
+    let end_y = random.random_range(80..=150);
+    let control_1_x =
+        start_x as f64 + (end_x - start_x) as f64 * 0.3 + random.random_range(-80..=80) as f64;
+    let control_1_y =
+        start_y as f64 + (end_y - start_y) as f64 * 0.2 + random.random_range(-60..=60) as f64;
+    let control_2_x =
+        start_x as f64 + (end_x - start_x) as f64 * 0.7 + random.random_range(-60..=60) as f64;
+    let control_2_y =
+        start_y as f64 + (end_y - start_y) as f64 * 0.8 + random.random_range(-40..=40) as f64;
+
+    let mut entries = vec![
+        "5,0,0".to_owned(),
+        format!("5,{sentinel},0"),
+        "5,0,0".to_owned(),
+        format!("5,{sentinel},0"),
+    ];
+    let mut timestamp = random.random_range(5..=20);
+    let mut event_index = 0;
+    entries.push(format!("6,{timestamp},{event_index},750,500"));
+    entries.push(format!("6,{sentinel},{event_index},750,500"));
+    event_index += 1;
+    for _ in 0..3 {
+        timestamp += random.random_range(80..=600);
+        entries.push(format!("5,{timestamp},{event_index}"));
+        entries.push(format!("5,{sentinel},{event_index}"));
+        event_index += 1;
+    }
+    for index in 0..=points {
+        let t = index as f64 / points as f64;
+        let u = 1.0 - t;
+        let jitter = (3.0 - t * 2.5).max(0.5);
+        let x = (u * u * u * start_x as f64
+            + 3.0 * u * u * t * control_1_x
+            + 3.0 * u * t * t * control_2_x
+            + t * t * t * end_x as f64
+            + (random.random::<f64>() - 0.5) * jitter)
+            .round() as i32;
+        let y = (u * u * u * start_y as f64
+            + 3.0 * u * u * t * control_1_y
+            + 3.0 * u * t * t * control_2_y
+            + t * t * t * end_y as f64
+            + (random.random::<f64>() - 0.5) * jitter)
+            .round() as i32;
+        timestamp += random.random_range(8..=50);
+        let sub_index = index % 2;
+        entries.push(format!("3,{timestamp},{sub_index},{x},{y}"));
+        entries.push(format!("3,{sentinel},{sub_index},{x},{y}"));
+        if index > 0 && index % 12 == 0 {
+            timestamp += random.random_range(20..=60);
+            entries.push(format!("5,{timestamp},{event_index}"));
+            entries.push(format!("5,{sentinel},{event_index}"));
+            event_index += 1;
+        }
+    }
+    timestamp += random.random_range(5..=30);
+    entries.push(format!(
+        "3,{timestamp},1,{},{}",
+        end_x + random.random_range(-5..=5),
+        end_y + random.random_range(-5..=5)
+    ));
+    entries.push(format!("3,{sentinel},1,{end_x},{end_y}"));
+
+    let webgl = webgl
+        .map(str::to_owned)
+        .unwrap_or_else(|| random.random::<u64>().to_string());
+    let plaintext = format!(
+        "mid={mid};userid={userid};dfid={dfid};webgl={webgl};webdriver=0;ts={};data={}",
+        unix_time_millis()?,
+        entries.join(":")
+    );
+    let edt = ssa_encrypt_plaintext(&plaintext, &key)?;
+    let sid = ssa_public_key()?
+        .encrypt(
+            &mut rand08::rngs::OsRng,
+            Oaep::new::<Sha256>(),
+            key.as_bytes(),
+        )
+        .map(|bytes| BASE64.encode(bytes))
+        .map_err(|error| error.to_string())?;
+    Ok((edt, sid))
+}
+
 struct PlaylistEncryption {
     key: String,
     bytes: Vec<u8>,
@@ -4988,7 +5154,7 @@ mod tests {
     #[test]
     fn manifest_only_lists_implemented_handlers() {
         let modules = modules().expect("native manifest should be valid JSON");
-        assert_eq!(modules.len(), 159);
+        assert_eq!(modules.len(), 164);
         assert!(modules.iter().all(|module| supports(module)));
     }
 
@@ -5083,6 +5249,23 @@ mod tests {
             .unwrap(),
             "d9d6ad01cbe0db5f8cf79b8b60ad75f2"
         );
+    }
+
+    #[test]
+    fn ssa_aes_matches_node_vector() {
+        assert_eq!(
+            ssa_encrypt_plaintext("mid=1;userid=2;dfid=3", "0123456789abcdef").unwrap(),
+            "gZlGvHupB4KT6Xgi5KclECiYUT3zEkt4TcetwvIF67E="
+        );
+    }
+
+    #[test]
+    fn ssa_generator_returns_base64_ciphertexts() {
+        let (edt, sid) = generate_simulate("1", "2", "3", Some("4")).unwrap();
+        let edt = BASE64.decode(edt).unwrap();
+        let sid = BASE64.decode(sid).unwrap();
+        assert!(!edt.is_empty() && edt.len().is_multiple_of(16));
+        assert_eq!(sid.len(), 256);
     }
 
     #[test]
