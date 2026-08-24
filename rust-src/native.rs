@@ -196,6 +196,45 @@ pub async fn invoke(
             )
             .await
         }
+        "artist_follow" | "artist_unfollow" => {
+            let clienttime = unix_time_millis()? / 1000;
+            let singerid = if module == "artist_follow" {
+                number_value(value(params, "id"))
+            } else {
+                value(params, "id")
+            };
+            let token = param_or_cookie(params, "token", json!(""));
+            let userid = if module == "artist_follow" {
+                number_value(param_or_cookie(params, "userid", json!(0)))
+            } else {
+                param_or_cookie(params, "userid", json!(0))
+            };
+            let (aes_key, encrypted_params) =
+                aes_encrypt_random(&json!({ "singerid": singerid, "token": token }))?;
+            let p = rsa_pkcs1_encrypt(
+                &json!({ "clienttime": clienttime, "key": aes_key }),
+                platform_config().2,
+            )?;
+            let request = NativeRequest::post(if module == "artist_follow" {
+                "/followservice/v3/follow_singer"
+            } else {
+                "/followservice/v3/unfollow_singer"
+            })
+            .data(json!({
+                "plat": 0,
+                "userid": userid,
+                "singerid": singerid,
+                "source": 7,
+                "p": p,
+                "params": encrypted_params,
+            }));
+            let request = if module == "artist_follow" {
+                request.params(json!({ "clienttime": clienttime }))
+            } else {
+                request
+            };
+            android_request(client, params, ip, request).await
+        }
         "artist_detail" => {
             android_request(
                 client,
@@ -953,6 +992,39 @@ pub async fn invoke(
                 }
             }
             Ok(response)
+        }
+        "login_device" => {
+            let clienttime = unix_time_millis()?;
+            let mut secret = Map::new();
+            if let Some(token) = params
+                .get("token")
+                .filter(|value| truthy(value))
+                .cloned()
+                .or_else(|| cookie_value(params, "token"))
+            {
+                secret.insert("token".to_owned(), token);
+            }
+            let (aes_key, encrypted_params) = aes_encrypt_random(&Value::Object(secret))?;
+            let pk = rsa_raw_encrypt(
+                &json!({ "clienttime_ms": clienttime, "key": aes_key }),
+                platform_config().2,
+            )?
+            .to_uppercase();
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v2/get_dev")
+                    .base_url("https://userinfoservice.kugou.com")
+                    .data(json!({
+                        "plat": 1,
+                        "userid": param_or_cookie(params, "userid", json!(0)),
+                        "clienttime_ms": clienttime,
+                        "pk": pk,
+                        "params": encrypted_params,
+                    })),
+            )
+            .await
         }
         "login_wx_check" => login_wx_check(client, params).await,
         "lastest_songs_listen" => {
@@ -2865,6 +2937,62 @@ pub async fn invoke(
             )
             .await
         }
+        "verify_user_info" => {
+            let v_type = number_value(value_or(params, "v_type", json!(23)));
+            let mut data = Map::from_iter([
+                (
+                    "userid".to_owned(),
+                    number_value(param_or_cookie(params, "userid", json!("0"))),
+                ),
+                ("platid".to_owned(), value_or(params, "platid", json!(2))),
+                ("v_type".to_owned(), v_type.clone()),
+                ("wasm".to_owned(), json!(1)),
+                ("i".to_owned(), json!("")),
+                ("sid".to_owned(), value_or(params, "sid", json!(""))),
+                ("edt".to_owned(), value_or(params, "edt", json!(""))),
+            ]);
+            if let Some(eventid) = params.get("eventid") {
+                data.insert("eventid".to_owned(), eventid.clone());
+            }
+            if v_type.as_i64() == Some(23) {
+                let (aes_key, encrypted_params) = aes_encrypt_random(&json!({}))?;
+                data.insert(
+                    "verifycode".to_owned(),
+                    value_or(params, "verifycode", json!("")),
+                );
+                data.insert(
+                    "pk".to_owned(),
+                    json!(rsa_raw_encrypt(
+                        &json!({ "key": aes_key }),
+                        platform_config().2
+                    )?),
+                );
+                data.insert("params".to_owned(), json!(encrypted_params));
+            } else if v_type.as_i64() == Some(32) {
+                let code = value_or(params, "verifycode", json!(""));
+                let (aes_key, encrypted_params) =
+                    aes_encrypt_random(&json!({ "code": code }))?;
+                data.insert("code".to_owned(), code);
+                data.insert(
+                    "pk".to_owned(),
+                    json!(rsa_raw_encrypt(
+                        &json!({ "key": aes_key }),
+                        platform_config().2
+                    )?),
+                );
+                data.insert("params".to_owned(), json!(encrypted_params));
+            }
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v4/verify_user_info")
+                    .base_url("https://verifyservice.kugou.com")
+                    .params(json!({ "clientver": 11510 }))
+                    .data(Value::Object(data)),
+            )
+            .await
+        }
         "brush" => {
             let (appid, _, is_lite) = platform_config();
             let clienttime = unix_time_millis()?;
@@ -3978,13 +4106,12 @@ fn sign_params_key(data: impl std::fmt::Display, is_lite: bool) -> String {
     )
 }
 
-fn rsa_raw_encrypt(data: &Value, is_lite: bool) -> Result<String, String> {
-    use rsa::{BigUint, RsaPublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts};
-
+fn rsa_public_key(is_lite: bool) -> Result<&'static rsa::RsaPublicKey, String> {
+    use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
     static STANDARD_KEY: std::sync::OnceLock<Result<RsaPublicKey, String>> =
         std::sync::OnceLock::new();
     static LITE_KEY: std::sync::OnceLock<Result<RsaPublicKey, String>> = std::sync::OnceLock::new();
-    let key = if is_lite {
+    (if is_lite {
         LITE_KEY.get_or_init(|| {
             let der = BASE64
                 .decode(LITE_RSA_PUBLIC_KEY)
@@ -3998,9 +4125,15 @@ fn rsa_raw_encrypt(data: &Value, is_lite: bool) -> Result<String, String> {
                 .map_err(|error| error.to_string())?;
             RsaPublicKey::from_public_key_der(&der).map_err(|error| error.to_string())
         })
-    }
+    })
     .as_ref()
-    .map_err(Clone::clone)?;
+    .map_err(Clone::clone)
+}
+
+fn rsa_raw_encrypt(data: &Value, is_lite: bool) -> Result<String, String> {
+    use rsa::{BigUint, traits::PublicKeyParts};
+
+    let key = rsa_public_key(is_lite)?;
     let input = js_string(data);
     if input.len() > key.size() {
         return Err("Data length exceeds key size".to_owned());
@@ -4009,15 +4142,73 @@ fn rsa_raw_encrypt(data: &Value, is_lite: bool) -> Result<String, String> {
     padded[..input.len()].copy_from_slice(input.as_bytes());
     let encrypted = BigUint::from_bytes_be(&padded).modpow(key.e(), key.n());
     let bytes = encrypted.to_bytes_be();
-    let mut output = String::with_capacity(key.size() * 2);
-    for _ in bytes.len()..key.size() {
-        output.push_str("00");
-    }
+    let mut padded = vec![0; key.size() - bytes.len()];
+    padded.extend(bytes);
+    Ok(hex_encode(&padded))
+}
+
+fn rsa_pkcs1_encrypt(data: &Value, is_lite: bool) -> Result<String, String> {
+    let encrypted = rsa_public_key(is_lite)?
+        .encrypt(
+            &mut rand08::rngs::OsRng,
+            rsa::Pkcs1v15Encrypt,
+            js_string(data).as_bytes(),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(hex_encode(&encrypted))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        use std::fmt::Write as _;
-        write!(&mut output, "{byte:02x}").map_err(|error| error.to_string())?;
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
     }
-    Ok(output)
+    output
+}
+
+fn aes_cbc_encrypt(data: &[u8], key: &str, iv: &str) -> Result<Vec<u8>, String> {
+    use cbc::cipher::{BlockEncryptMut as _, KeyIvInit as _, block_padding::Pkcs7};
+
+    match key.len() {
+        16 => Ok(
+            cbc::Encryptor::<aes::Aes128>::new_from_slices(key.as_bytes(), iv.as_bytes())
+                .map_err(|error| error.to_string())?
+                .encrypt_padded_vec_mut::<Pkcs7>(data),
+        ),
+        24 => Ok(
+            cbc::Encryptor::<aes::Aes192>::new_from_slices(key.as_bytes(), iv.as_bytes())
+                .map_err(|error| error.to_string())?
+                .encrypt_padded_vec_mut::<Pkcs7>(data),
+        ),
+        32 => Ok(
+            cbc::Encryptor::<aes::Aes256>::new_from_slices(key.as_bytes(), iv.as_bytes())
+                .map_err(|error| error.to_string())?
+                .encrypt_padded_vec_mut::<Pkcs7>(data),
+        ),
+        _ => Err("AES key must be 16, 24, or 32 bytes".to_owned()),
+    }
+}
+
+fn aes_encrypt_with_key(data: &Value, key: &str, iv: &str) -> Result<String, String> {
+    Ok(hex_encode(&aes_cbc_encrypt(
+        js_string(data).as_bytes(),
+        key,
+        iv,
+    )?))
+}
+
+fn aes_encrypt_random(data: &Value) -> Result<(String, String), String> {
+    let temporary_key: String = rand::rng()
+        .sample_iter(Alphanumeric)
+        .take(16)
+        .map(char::from)
+        .collect::<String>()
+        .to_lowercase();
+    let key = format!("{:x}", md5::compute(&temporary_key));
+    let iv = &key[16..];
+    Ok((temporary_key, aes_encrypt_with_key(data, &key, iv)?))
 }
 
 fn clean_set_cookie(value: &str) -> String {
@@ -4111,7 +4302,7 @@ mod tests {
     #[test]
     fn manifest_only_lists_implemented_handlers() {
         let modules = modules().expect("native manifest should be valid JSON");
-        assert_eq!(modules.len(), 149);
+        assert_eq!(modules.len(), 153);
         assert!(modules.iter().all(|module| supports(module)));
     }
 
@@ -4192,6 +4383,19 @@ mod tests {
         assert_eq!(
             rsa_raw_encrypt(&json!({ "clienttime": 123, "token": "abc" }), true).unwrap(),
             "780c0d073146509ecac63af3b78415ba41576dc3d9c04e4def3587e9132e30448193cd32e2dbc2ac0f7a5addfd53b4481b47f3eedc279dd7ba518131d99cb2c9db136536386fe3bf9f82a2f684ceb1da192f3e1f4768b17852de50a1fc959793da447d364c94c2f2760c605cf62577030f0db99b9591900d0350f919966e3c48"
+        );
+    }
+
+    #[test]
+    fn aes_cbc_matches_node_vector() {
+        assert_eq!(
+            aes_encrypt_with_key(
+                &json!({ "x": 1 }),
+                "0123456789abcdef0123456789abcdef",
+                "0123456789abcdef",
+            )
+            .unwrap(),
+            "d9d6ad01cbe0db5f8cf79b8b60ad75f2"
         );
     }
 }

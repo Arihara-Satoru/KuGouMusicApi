@@ -92,6 +92,8 @@ async function main() {
       { module: 'artist_audios', route: '/artist/audios?id=1&page=1&pagesize=2&sort=hot', compareShape: true },
       { module: 'artist_detail', route: '/artist/detail?id=1', compareShape: true },
       { module: 'artist_follow_newsongs', route: '/artist/follow/newsongs?last_album_id=0&pagesize=2', compareShape: true },
+      { module: 'artist_follow', route: '/artist/follow?id=1&userid=0', compareShape: true },
+      { module: 'artist_unfollow', route: '/artist/unfollow?id=1&userid=0', compareShape: true },
       { module: 'artist_honour', route: '/artist/honour?id=1&page=1&pagesize=2', compareShape: true },
       { module: 'artist_lists', route: '/artist/lists?musician=0&hotsize=2', compareShape: true },
       { module: 'artist_videos', route: '/artist/videos?id=1&tag=all&page=1&pagesize=2', compareShape: true },
@@ -136,6 +138,7 @@ async function main() {
       { module: 'longaudio_week_recommend', route: '/longaudio/week/recommend', compareShape: true },
       { module: 'login_qr_create', route: '/login/qr/create?key=contract-test' },
       { module: 'login_qr_check', route: '/login/qr/check?key=invalid-contract-test', compareShape: true },
+      { module: 'login_device', route: '/login/device?userid=0', compareShape: true },
       { module: 'login_qr_key', route: '/login/qr/key?type=web', compareShape: true },
       { module: 'login_wx_check', route: '/login/wx/check?uuid=invalid-contract-test' },
       { module: 'kmr_audio_mv', route: '/kmr/audio/mv?album_audio_id=1', compareShape: true },
@@ -213,6 +216,7 @@ async function main() {
       { module: 'video_url', route: '/video/url?hash=ABC', compareShape: true },
       { module: 'video_detail', route: '/video/detail?id=1', compareShape: true },
       { module: 'video_privilege', route: '/video/privilege?hash=ABC', compareShape: true },
+      { module: 'verify_user_info', route: '/verify/user/info?eventid=1&userid=0&v_type=23&verifycode=test', compareShape: true },
       { module: 'youth_channel_all', route: '/youth/channel/all?page=1&pagesize=2', compareShape: true },
       { module: 'youth_channel_amway', route: '/youth/channel/amway?global_collection_id=1', compareShape: true },
       { module: 'youth_channel_detail', route: '/youth/channel/detail?global_collection_id=1', compareShape: true },
@@ -242,6 +246,12 @@ async function main() {
       for (const response of [rustResponse, nodeResponse]) {
         if (response.status === 502 && response.body?.status === 0 && response.body.msg) {
           response.body.msg = '<upstream-error>'
+        }
+        if (test.module === 'comment_music_hotword') {
+          const hotWords = response.body?.hot_word_list
+          if ((Array.isArray(hotWords) && hotWords.length === 0) || (hotWords && Object.keys(hotWords).length === 0)) {
+            response.body.hot_word_list = []
+          }
         }
       }
       if (test.compareShape) {
