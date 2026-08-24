@@ -25,6 +25,7 @@ rsa = "0.9.8"
 rquickjs = { version = "0.12.2", features = ["futures", "parallel"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.143", features = ["preserve_order"] }
+sha1 = "0.10.6"
 sha2 = "0.10.9"
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "signal"] }
 tower-http = { version = "0.6.6", features = ["fs", "trace"] }

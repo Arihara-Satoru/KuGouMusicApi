@@ -1223,6 +1223,96 @@ pub async fn invoke(
             finish_login(&mut response, &aes_key, true)?;
             Ok(response)
         }
+        "login_token" => {
+            let clienttime = unix_time_millis()?;
+            let is_lite = platform_config().2;
+            let token = param_or_cookie(params, "token", json!(""));
+            let userid = param_or_cookie(params, "userid", json!("0"));
+            let p3 = aes_encrypt_with_key(
+                &json!({ "clienttime": clienttime / 1000, "token": token }),
+                if is_lite {
+                    "c24f74ca2820225badc01946dba4fdf7"
+                } else {
+                    "90b8382a1bb4ccdcf063102053fd75b8"
+                },
+                if is_lite {
+                    "adc01946dba4fdf7"
+                } else {
+                    "f063102053fd75b8"
+                },
+            )?;
+            let (aes_key, encrypted_params) = aes_encrypt_random(&json!({}))?;
+            let t2 = aes_encrypt_with_key(
+                &json!(format!(
+                    "{}|0f607264fc6318a92b9e13c65db7cd3c|{}|{}|{clienttime}",
+                    cookie_value(params, "KUGOU_API_GUID")
+                        .map(|value| js_string(&value))
+                        .unwrap_or_else(|| "undefined".to_owned()),
+                    cookie_value(params, "KUGOU_API_MAC")
+                        .map(|value| js_string(&value))
+                        .unwrap_or_else(|| "undefined".to_owned()),
+                    cookie_value(params, "KUGOU_API_DEV")
+                        .map(|value| js_string(&value))
+                        .unwrap_or_else(|| "undefined".to_owned()),
+                )),
+                "fd14b35e3f81af3817a20ae7adae7020",
+                "17a20ae7adae7020",
+            )?;
+            let previous_t1 = cookie_value(params, "t1")
+                .map(|value| js_string(&value))
+                .unwrap_or_default();
+            let t1 = aes_encrypt_with_key(
+                &json!(format!("{previous_t1}|{clienttime}")),
+                "5e4ef500e9597fe004bd09a46d8add98",
+                "04bd09a46d8add98",
+            )?;
+            let mut data = Map::from_iter([
+                (
+                    "dfid".to_owned(),
+                    cookie_value(params, "dfid").unwrap_or_else(|| json!("-")),
+                ),
+                ("p3".to_owned(), json!(p3)),
+                ("plat".to_owned(), json!(1)),
+                (
+                    "t1".to_owned(),
+                    if is_lite { json!(t1) } else { json!(0) },
+                ),
+                (
+                    "t2".to_owned(),
+                    if is_lite { json!(t2) } else { json!(0) },
+                ),
+                ("t3".to_owned(), json!("MCwwLDAsMCwwLDAsMCwwLDA=")),
+                (
+                    "pk".to_owned(),
+                    json!(rsa_raw_encrypt(
+                        &json!({ "clienttime_ms": clienttime, "key": aes_key }),
+                        is_lite,
+                    )?),
+                ),
+                ("params".to_owned(), json!(encrypted_params)),
+                ("userid".to_owned(), userid),
+                ("clienttime_ms".to_owned(), json!(clienttime)),
+            ]);
+            if is_lite {
+                data.insert(
+                    "dev".to_owned(),
+                    cookie_value(params, "KUGOU_API_DEV").unwrap_or(Value::Null),
+                );
+            }
+            let mut response = android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v5/login_by_token")
+                    .base_url("http://login.user.kugou.com")
+                    .data(Value::Object(data)),
+            )
+            .await?;
+            finish_login(&mut response, &aes_key, true)?;
+            Ok(response)
+        }
+        "login_openplat" => login_openplat(client, params, ip).await,
+        "login_wx_create" => login_wx_create(client).await,
         "login_wx_check" => login_wx_check(client, params).await,
         "lyric" => {
             let mut response = android_request(
@@ -3504,6 +3594,7 @@ pub async fn invoke(
             enrich_top_ip(&mut response.body);
             Ok(response)
         }
+        "user_grade_info" => user_grade_info(client, params, ip).await,
         "user_cloud_url" => {
             let hash = params
                 .get("hash")
@@ -4425,6 +4516,229 @@ fn platform_config() -> (u16, u32, bool) {
     }
 }
 
+async fn user_grade_info(
+    client: &Client,
+    params: &Value,
+    ip: IpAddr,
+) -> Result<ModuleResponse, String> {
+    let is_lite = platform_config().2;
+    let use_v4 = params
+        .get("protocol")
+        .filter(|value| truthy(value))
+        .map(js_string)
+        .unwrap_or_else(|| if is_lite { "v2" } else { "v4" }.to_owned())
+        == "v4";
+    let appid = js_string(&value_or(
+        params,
+        "appid",
+        json!(if use_v4 || !is_lite { 1005 } else { 3116 }),
+    ));
+    let clientver = js_string(&value_or(
+        params,
+        "clientver",
+        json!(if use_v4 || !is_lite { 20489 } else { 11440 }),
+    ));
+    let appkey = js_string(&value_or(
+        params,
+        "appkey",
+        json!(if use_v4 || !is_lite {
+            "OIlwieks28dk2k092lksi2UIkp"
+        } else {
+            "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA"
+        }),
+    ));
+    let custom_key = params
+        .get("publicKey")
+        .filter(|value| truthy(value))
+        .map(js_string)
+        .map(|value| parse_rsa_public_key(&value))
+        .transpose()?;
+    let public_key = if let Some(key) = custom_key.as_ref() {
+        key
+    } else {
+        rsa_public_key(!use_v4 && is_lite)?
+    };
+
+    if !use_v4 {
+        let token = param_or_cookie(params, "token", json!(""));
+        let userid = number_value(param_or_cookie(params, "userid", json!(0)));
+        let mid = params
+            .get("mid")
+            .filter(|value| truthy(value))
+            .cloned()
+            .or_else(|| cookie_value(params, "mid"))
+            .or_else(|| cookie_value(params, "KUGOU_API_MID"))
+            .unwrap_or_else(|| json!(""));
+        let uuid = value_or(params, "uuid", json!("-"));
+        let dfid = param_or_cookie(params, "dfid", json!("-"));
+        let clienttime = unix_time_millis()? / 1000;
+        let mut data = Map::from_iter([
+            ("mid".to_owned(), mid),
+            ("type".to_owned(), value_or(params, "type", json!(1))),
+            ("uuid".to_owned(), uuid),
+            ("userid".to_owned(), userid.clone()),
+        ]);
+        let report = params.get("d_sec").is_some_and(|value| !value.is_null())
+            && params.get("diff_sec").is_some_and(|value| !value.is_null());
+        let p = if report {
+            let d_sec = number_value(value(params, "d_sec"));
+            let diff_sec = number_value(value(params, "diff_sec"));
+            let y_type = value_or(params, "y_type", json!(0));
+            let m_type = value_or(params, "m_type", json!(0));
+            let digest = format!(
+                "{:x}",
+                md5::compute(format!(
+                    "{}{}{}{}",
+                    js_string(&d_sec),
+                    js_string(&diff_sec),
+                    js_string(&y_type),
+                    js_string(&m_type)
+                ))
+            );
+            data.extend([
+                ("d_sec".to_owned(), d_sec),
+                ("diff_sec".to_owned(), diff_sec),
+                ("y_type".to_owned(), y_type),
+                ("m_type".to_owned(), m_type),
+            ]);
+            rsa_raw_encrypt_with_key(&json!({ "token": token, "md5": digest }), public_key)?
+        } else {
+            rsa_raw_encrypt_with_key(
+                &json!(
+                    serde_json::to_string(&json!({
+                        "clienttime": clienttime,
+                        "userid": userid,
+                    }))
+                    .map_err(|error| error.to_string())?
+                ),
+                public_key,
+            )?
+        };
+        data.extend([
+            ("p".to_owned(), json!(p.to_uppercase())),
+            ("appid".to_owned(), json!(appid)),
+            ("clientver".to_owned(), json!(clientver)),
+            ("clienttime".to_owned(), json!(clienttime)),
+            (
+                "key".to_owned(),
+                json!(format!(
+                    "{:x}",
+                    md5::compute(format!("{appid}{appkey}{clientver}{clienttime}"))
+                )),
+            ),
+        ]);
+        return android_request(
+            client,
+            params,
+            ip,
+            NativeRequest::post("/v2/get_grade_info")
+                .base_url("http://userinfo.user.kugou.com")
+                .params(json!({ "dfid": dfid }))
+                .data(Value::Object(data))
+                .clear_default_params()
+                .unsigned()
+                .header("Content-Type", "text/plain; charset=ISO-8859-1")
+                .header(
+                    "User-Agent",
+                    format!("Android15-1070-{clientver}-201-0-get_user_grade_info-wifi"),
+                )
+                .header(
+                    "KG-THash",
+                    format!("{:07x}", rand::rng().random_range(0..0xfffffff)),
+                )
+                .header("KG-Rec", "1")
+                .header("KG-RC", "1"),
+        )
+        .await;
+    }
+
+    let token = param_or_cookie(params, "token", json!(""));
+    let userid = js_string(&param_or_cookie(params, "userid", json!(0)));
+    let mid = params
+        .get("mid")
+        .filter(|value| truthy(value))
+        .cloned()
+        .or_else(|| cookie_value(params, "mid"))
+        .or_else(|| cookie_value(params, "KUGOU_API_MID"))
+        .map(|value| js_string(&value))
+        .unwrap_or_default();
+    let dfid = js_string(&param_or_cookie(params, "dfid", json!("-")));
+    let uuid = js_string(&value_or(params, "uuid", json!("-")));
+    let milliseconds = unix_time_millis()?;
+    let clienttime = milliseconds / 1000;
+    let d_sec = number_value(value_nullish(params, "d_sec", json!(0)));
+    let diff_sec = number_value(value_nullish(params, "diff_sec", json!(0)));
+    let y_type = value_or(params, "y_type", json!(0));
+    let m_type = value_or(params, "m_type", json!(0));
+    let digest = format!(
+        "{:x}",
+        md5::compute(format!(
+            "{}{}{}{}",
+            js_string(&d_sec),
+            js_string(&diff_sec),
+            js_string(&y_type),
+            js_string(&m_type)
+        ))
+    );
+    let aes_seed = hex_encode(
+        &(0..8)
+            .map(|_| rand::rng().random::<u8>())
+            .collect::<Vec<_>>(),
+    );
+    let seed_md5 = format!("{:x}", md5::compute(&aes_seed));
+    let encrypted_params = aes_encrypt_with_key(
+        &json!({ "userid": userid, "token": token, "md5": digest }),
+        &seed_md5,
+        &seed_md5[16..],
+    )?;
+    let body = json!({
+        "plat": 1,
+        "userid": userid,
+        "clienttime_ms": milliseconds,
+        "type": 0,
+        "d_sec": d_sec,
+        "diff_sec": diff_sec,
+        "y_type": y_type,
+        "m_type": m_type,
+        "pk": rsa_raw_encrypt_with_key(
+            &json!({ "clienttime_ms": milliseconds, "key": aes_seed }),
+            public_key,
+        )?,
+        "params": encrypted_params,
+        "medal": 0,
+    });
+    let body = js_string(&body);
+    let mut query = Map::from_iter([
+        ("clienttime".to_owned(), json!(clienttime)),
+        ("mid".to_owned(), json!(mid.clone())),
+        ("dfid".to_owned(), json!(dfid)),
+        ("uuid".to_owned(), json!(uuid)),
+        ("appid".to_owned(), json!(appid)),
+        ("clientver".to_owned(), json!(clientver.clone())),
+    ]);
+    let signature = signature_android(&query, &body, false);
+    query.insert("signature".to_owned(), json!(signature));
+    android_request(
+        client,
+        params,
+        ip,
+        NativeRequest::post("/v4/get_grade_info")
+            .base_url("https://userinfoservice.kugou.com")
+            .params(Value::Object(query))
+            .data(json!(body))
+            .clear_default_params()
+            .unsigned()
+            .header("Content-Type", "application/json; charset=UTF-8")
+            .header(
+                "User-Agent",
+                format!("Android15-1070-{clientver}-201-0-get_user_grade_info-wifi"),
+            )
+            .header("KG-DEVID", mid)
+            .header("KG-CLIENTTIMEMS", milliseconds.to_string()),
+    )
+    .await
+}
+
 async fn verify_user_info_request(
     client: &Client,
     params: &Value,
@@ -4799,9 +5113,12 @@ fn rsa_public_key(is_lite: bool) -> Result<&'static rsa::RsaPublicKey, String> {
 }
 
 fn rsa_raw_encrypt(data: &Value, is_lite: bool) -> Result<String, String> {
+    rsa_raw_encrypt_with_key(data, rsa_public_key(is_lite)?)
+}
+
+fn rsa_raw_encrypt_with_key(data: &Value, key: &rsa::RsaPublicKey) -> Result<String, String> {
     use rsa::{BigUint, traits::PublicKeyParts};
 
-    let key = rsa_public_key(is_lite)?;
     let input = js_string(data);
     if input.len() > key.size() {
         return Err("Data length exceeds key size".to_owned());
@@ -4813,6 +5130,17 @@ fn rsa_raw_encrypt(data: &Value, is_lite: bool) -> Result<String, String> {
     let mut padded = vec![0; key.size() - bytes.len()];
     padded.extend(bytes);
     Ok(hex_encode(&padded))
+}
+
+fn parse_rsa_public_key(value: &str) -> Result<rsa::RsaPublicKey, String> {
+    use rsa::{RsaPublicKey, pkcs8::DecodePublicKey};
+
+    let encoded = value
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect::<String>();
+    let der = BASE64.decode(encoded).map_err(|error| error.to_string())?;
+    RsaPublicKey::from_public_key_der(&der).map_err(|error| error.to_string())
 }
 
 fn rsa_pkcs1_encrypt(data: &Value, is_lite: bool) -> Result<String, String> {
@@ -5147,6 +5475,218 @@ async fn login_wx_check(client: &Client, params: &Value) -> Result<ModuleRespons
     })
 }
 
+async fn request_json(request: reqwest::RequestBuilder) -> Result<Value, String> {
+    let response = request
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?;
+    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+}
+
+fn login_module_error(message: Value) -> ModuleResponse {
+    ModuleResponse {
+        status: 502,
+        body: json!({ "status": 0, "msg": message }),
+        cookie: Vec::new(),
+        headers: HashMap::new(),
+    }
+}
+
+async fn login_openplat(
+    client: &Client,
+    params: &Value,
+    ip: IpAddr,
+) -> Result<ModuleResponse, String> {
+    let is_lite = platform_config().2;
+    let appid = if is_lite {
+        "wx72b795aca60ad321"
+    } else {
+        "wx79f2c4418704b4f8"
+    };
+    let secret = if is_lite {
+        "33e486041e5e25729a4e3d2da7502f9a"
+    } else {
+        "4efcab88b700769e376e3f6087b8abc9"
+    };
+    let token_response = match request_json(
+        client
+            .post("https://api.weixin.qq.com/sns/oauth2/access_token")
+            .query(&[
+                ("secret", secret),
+                ("appid", appid),
+                (
+                    "code",
+                    params
+                        .get("code")
+                        .map(js_string)
+                        .unwrap_or_default()
+                        .as_str(),
+                ),
+                ("grant_type", "authorization_code"),
+            ]),
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(message) => return Ok(login_module_error(json!(message))),
+    };
+    let Some(access_token) = token_response.get("access_token").and_then(Value::as_str) else {
+        return Ok(login_module_error(token_response));
+    };
+    let Some(openid) = token_response.get("openid").and_then(Value::as_str) else {
+        return Ok(login_module_error(token_response));
+    };
+
+    let clienttime = unix_time_millis()?;
+    let (aes_key, encrypted_params) = aes_encrypt_random(&json!({ "access_token": access_token }))?;
+    let t2 = aes_encrypt_with_key(
+        &json!(format!(
+            "{}|0f607264fc6318a92b9e13c65db7cd3c|{}|{}|{clienttime}",
+            cookie_value(params, "KUGOU_API_GUID")
+                .map(|value| js_string(&value))
+                .unwrap_or_else(|| "undefined".to_owned()),
+            cookie_value(params, "KUGOU_API_MAC")
+                .map(|value| js_string(&value))
+                .unwrap_or_else(|| "undefined".to_owned()),
+            cookie_value(params, "KUGOU_API_DEV")
+                .map(|value| js_string(&value))
+                .unwrap_or_else(|| "undefined".to_owned()),
+        )),
+        "fd14b35e3f81af3817a20ae7adae7020",
+        "17a20ae7adae7020",
+    )?;
+    let t1 = aes_encrypt_with_key(
+        &json!(format!("|{clienttime}")),
+        "5e4ef500e9597fe004bd09a46d8add98",
+        "04bd09a46d8add98",
+    )?;
+    let mut response = android_request(
+        client,
+        params,
+        ip,
+        NativeRequest::post("/v6/login_by_openplat")
+            .data(json!({
+                "dev": cookie_value(params, "KUGOU_API_DEV").unwrap_or(Value::Null),
+                "force_login": 1,
+                "partnerid": 36,
+                "clienttime_ms": clienttime,
+                "t1": if is_lite { json!(t1) } else { json!(0) },
+                "t2": if is_lite { json!(t2) } else { json!(0) },
+                "t3": "MCwwLDAsMCwwLDAsMCwwLDA=",
+                "openid": openid,
+                "params": encrypted_params,
+                "pk": rsa_raw_encrypt(
+                    &json!({ "clienttime_ms": clienttime, "key": aes_key }),
+                    is_lite,
+                )?.to_uppercase(),
+            }))
+            .header("x-router", "login.user.kugou.com"),
+    )
+    .await?;
+    finish_login(&mut response, &aes_key, true)?;
+    Ok(response)
+}
+
+async fn login_wx_create(client: &Client) -> Result<ModuleResponse, String> {
+    use sha1::{Digest as _, Sha1};
+
+    let is_lite = platform_config().2;
+    let appid = if is_lite {
+        "wx72b795aca60ad321"
+    } else {
+        "wx79f2c4418704b4f8"
+    };
+    let secret = if is_lite {
+        "33e486041e5e25729a4e3d2da7502f9a"
+    } else {
+        "4efcab88b700769e376e3f6087b8abc9"
+    };
+    let access = match request_json(
+        client
+            .get("https://api.weixin.qq.com/cgi-bin/token")
+            .query(&[
+                ("appid", appid),
+                ("secret", secret),
+                ("grant_type", "client_credential"),
+            ]),
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(message) => return Ok(login_module_error(json!(message))),
+    };
+    let Some(access_token) = access.get("access_token").and_then(Value::as_str) else {
+        return Ok(login_module_error(access));
+    };
+    let ticket = match request_json(
+        client
+            .get("https://api.weixin.qq.com/cgi-bin/ticket/getticket")
+            .query(&[("access_token", access_token), ("type", "2")]),
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(message) => return Ok(login_module_error(json!(message))),
+    };
+    if ticket.get("errcode").and_then(Value::as_i64) != Some(0) {
+        return Ok(login_module_error(ticket));
+    }
+    let ticket = ticket
+        .get("ticket")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "WeChat ticket is missing".to_owned())?;
+    let timestamp = unix_time_millis()?;
+    let noncestr = format!("{:x}", md5::compute(random_uppercase_digits(16)));
+    let signature = format!(
+        "{:x}",
+        Sha1::digest(format!(
+            "appid={appid}&noncestr={noncestr}&sdk_ticket={ticket}&timestamp={timestamp}"
+        ))
+    );
+    let mut connect = match request_json(
+        client
+            .get("https://open.weixin.qq.com/connect/sdk/qrconnect")
+            .query(&[
+                ("appid", appid.to_owned()),
+                ("noncestr", noncestr),
+                ("timestamp", timestamp.to_string()),
+                ("scope", "snsapi_userinfo".to_owned()),
+                ("signature", signature),
+            ]),
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(message) => return Ok(login_module_error(json!(message))),
+    };
+    if connect.get("errcode").and_then(Value::as_i64) != Some(0) {
+        return Ok(login_module_error(connect));
+    }
+    let uuid = connect
+        .get("uuid")
+        .map(js_string)
+        .ok_or_else(|| "WeChat UUID is missing".to_owned())?;
+    let qrcode = connect
+        .get_mut("qrcode")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "WeChat QR code is missing".to_owned())?;
+    qrcode.insert(
+        "qrcodeurl".to_owned(),
+        json!(format!(
+            "https://open.weixin.qq.com/connect/confirm?uuid={uuid}"
+        )),
+    );
+    Ok(ModuleResponse {
+        status: 200,
+        body: connect,
+        cookie: Vec::new(),
+        headers: HashMap::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5154,7 +5694,7 @@ mod tests {
     #[test]
     fn manifest_only_lists_implemented_handlers() {
         let modules = modules().expect("native manifest should be valid JSON");
-        assert_eq!(modules.len(), 164);
+        assert_eq!(modules.len(), 168);
         assert!(modules.iter().all(|module| supports(module)));
     }
 

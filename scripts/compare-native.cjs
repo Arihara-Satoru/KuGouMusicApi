@@ -139,11 +139,14 @@ async function main() {
       { module: 'longaudio_week_recommend', route: '/longaudio/week/recommend', compareShape: true },
       { module: 'login', route: '/login?username=test&password=test', compareShape: true },
       { module: 'login_cellphone', route: '/login/cellphone?mobile=13800138000&code=000000', compareShape: true },
+      { module: 'login_openplat', route: '/login/openplat?code=invalid-contract-test', compareShape: true },
       { module: 'login_qr_create', route: '/login/qr/create?key=contract-test' },
       { module: 'login_qr_check', route: '/login/qr/check?key=invalid-contract-test', compareShape: true },
       { module: 'login_device', route: '/login/device?userid=0', compareShape: true },
       { module: 'login_device_kick', route: '/login/device/kick?userid=0&t_mid=test&t=1&t_appid=3116&t_clientver=11440', compareShape: true },
       { module: 'login_qr_key', route: '/login/qr/key?type=web', compareShape: true },
+      { module: 'login_token', route: '/login/token?userid=0&token=invalid-contract-test', compareShape: true },
+      { module: 'login_wx_create', route: '/login/wx/create', compareShape: true },
       { module: 'login_wx_check', route: '/login/wx/check?uuid=invalid-contract-test' },
       { module: 'kmr_audio_mv', route: '/kmr/audio/mv?album_audio_id=1', compareShape: true },
       { module: 'krm_audio', route: '/krm/audio?album_audio_id=1&fields=base', compareShape: true },
@@ -212,6 +215,7 @@ async function main() {
       { module: 'user_follow_message', route: '/user/follow/message?userid=0&id=1&pagesize=2', compareShape: true },
       { module: 'user_follow', route: '/user/follow?userid=0', compareShape: true },
       { module: 'user_history', route: '/user/history?userid=0', compareShape: true },
+      { module: 'user_grade_info', route: '/user/grade/info?userid=0', compareShape: true },
       { module: 'user_cloud_url', route: '/user/cloud/url?hash=ABC&album_audio_id=0&audio_id=0', compareShape: true },
       { module: 'user_cloud', route: '/user/cloud?userid=0&page=1&pagesize=2', compareShape: true },
       { module: 'user_cloud_del', route: '/user/cloud/del?userid=0&fileid=1&album_audio_id=0', compareShape: true },
@@ -248,8 +252,13 @@ async function main() {
       { module: 'yueku_banner', route: '/yueku/banner?userid=0', compareShape: true },
       { module: 'yueku_fm', route: '/yueku/fm', compareShape: true },
     ]
-    assert.deepStrictEqual(cases.map(test => test.module).sort(), [...nativeModules].sort(), 'every native module needs a comparison case')
-    for (const test of cases) {
+    const selectedModule = process.env.COMPARE_MODULE
+    if (!selectedModule) {
+      assert.deepStrictEqual(cases.map(test => test.module).sort(), [...nativeModules].sort(), 'every native module needs a comparison case')
+    }
+    const selectedCases = selectedModule ? cases.filter(test => test.module === selectedModule) : cases
+    assert(selectedCases.length, `unknown comparison module: ${selectedModule}`)
+    for (const test of selectedCases) {
       const [rustResponse, nodeResponse] = await Promise.all([
         request(`http://127.0.0.1:${rustPort}${test.route}`, test),
         request(`http://127.0.0.1:${nodePort}${test.route}`, test),
