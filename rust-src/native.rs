@@ -961,6 +961,45 @@ pub async fn invoke(
             )
             .await
         }
+        "login" => {
+            let clienttime = unix_time_millis()?;
+            let (aes_key, encrypted_params) = aes_encrypt_random(&json!({
+                "pwd": value_or(params, "password", json!("")),
+                "code": value_or(params, "code", json!("")),
+                "clienttime_ms": clienttime,
+            }))?;
+            let mut data = Map::from_iter([
+                ("plat".to_owned(), json!(1)),
+                ("support_multi".to_owned(), json!(1)),
+                ("clienttime_ms".to_owned(), json!(clienttime)),
+                ("t1".to_owned(), json!("562a6f12a6e803453647d16a08f5f0c2ff7eee692cba2ab74cc4c8ab47fc467561a7c6b586ce7dc46a63613b246737c03a1dc8f8d162d8ce1d2c71893d19f1d4b797685a4c6d3d81341cbde65e488c4829a9b4d42ef2df470eb102979fa5adcdd9b4eecfea8b909ff7599abeb49867640f10c3c70fc444effca9d15db44a9a6c907731e2bb0f22cd9b3536380169995693e5f0e2424e3378097d3813186e3fe96bbe7023808a0981b4e2b6135a76faac")),
+                ("t2".to_owned(), json!("31c4daf4cf480169ccea1cb7d4a209295865a9d2b788510301694db229b87807469ea0d41b4d4b9173c2151da7294aeebfc9738df154bbdf11a4e117bb5dff6a3af8ce5ce333e681c1f29a44038f27567d58992eb81283e080778ac77db1400fdf49b7cf7e26be2e5af4da7830cc3be4")),
+                ("t3".to_owned(), json!("MCwwLDAsMCwwLDAsMCwwLDA=")),
+                ("params".to_owned(), json!(encrypted_params)),
+                (
+                    "pk".to_owned(),
+                    json!(rsa_raw_encrypt(
+                        &json!({ "clienttime_ms": clienttime, "key": aes_key }),
+                        platform_config().2
+                    )?
+                    .to_uppercase()),
+                ),
+            ]);
+            if let Some(username) = params.get("username") {
+                data.insert("username".to_owned(), username.clone());
+            }
+            let mut response = android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v9/login_by_pwd")
+                    .data(Value::Object(data))
+                    .header("x-router", "login.user.kugou.com"),
+            )
+            .await?;
+            finish_login(&mut response, &aes_key, false)?;
+            Ok(response)
+        }
         "login_qr_check" => {
             let mut response = android_request(
                 client,
@@ -1026,7 +1065,205 @@ pub async fn invoke(
             )
             .await
         }
+        "login_device_kick" => {
+            let clienttime = unix_time_millis()?;
+            let raw_token = param_or_cookie(params, "token", json!(""));
+            let token = format!(
+                "h5{}",
+                rsa_raw_encrypt(
+                    &json!(format!("moc.uoguk.59::{}", js_string(&raw_token))),
+                    true,
+                )?
+                .to_uppercase()
+            );
+            let (appid, clientver, _) = platform_config();
+            let mut signed = Map::from_iter([
+                ("appid".to_owned(), json!(appid)),
+                ("clientver".to_owned(), json!(clientver)),
+                ("clienttime".to_owned(), json!(clienttime)),
+                (
+                    "mid".to_owned(),
+                    cookie_value(params, "KUGOU_API_MID")
+                        .filter(truthy)
+                        .unwrap_or_else(|| value_or(params, "mid", json!(""))),
+                ),
+                (
+                    "uuid".to_owned(),
+                    value_or(params, "uuid", cookie_value(params, "uuid").unwrap_or_else(|| json!("-"))),
+                ),
+                ("dfid".to_owned(), cookie_or_param(params, "dfid", json!("-"))),
+                ("plat".to_owned(), json!(1)),
+                (
+                    "userid".to_owned(),
+                    number_value(param_or_cookie(params, "userid", json!("0"))),
+                ),
+                ("token".to_owned(), json!(token)),
+                ("srcappid".to_owned(), json!(2919)),
+            ]);
+            for field in ["t_mid", "t", "t_appid", "t_clientver"] {
+                signed.insert(
+                    field.to_owned(),
+                    params
+                        .get(field)
+                        .cloned()
+                        .unwrap_or_else(|| json!("undefined")),
+                );
+            }
+            let signature = signature_web(&signed);
+            for field in ["t_mid", "t", "t_appid", "t_clientver"] {
+                if params.get(field).is_none_or(Value::is_null) {
+                    signed.remove(field);
+                }
+            }
+            signed.insert("signature".to_owned(), json!(signature));
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get("/loginservice/v1/dev_logout")
+                    .params(Value::Object(signed))
+                    .header("Host", "gateway.kugou.com"),
+            )
+            .await
+        }
+        "login_cellphone" => {
+            let clienttime = unix_time_millis()?;
+            let is_lite = platform_config().2;
+            let (aes_key, encrypted_params) = aes_encrypt_random(&json!({
+                "mobile": value_or(params, "mobile", json!("")),
+                "code": value_or(params, "code", json!("")),
+            }))?;
+            let device_text = format!(
+                "{}|0f607264fc6318a92b9e13c65db7cd3c|{}|{}|{clienttime}",
+                cookie_value(params, "KUGOU_API_GUID")
+                    .map(|value| js_string(&value))
+                    .unwrap_or_else(|| "undefined".to_owned()),
+                cookie_value(params, "KUGOU_API_MAC")
+                    .map(|value| js_string(&value))
+                    .unwrap_or_else(|| "undefined".to_owned()),
+                cookie_value(params, "KUGOU_API_DEV")
+                    .map(|value| js_string(&value))
+                    .unwrap_or_else(|| "undefined".to_owned()),
+            );
+            let t2 = aes_encrypt_with_key(
+                &json!(device_text),
+                "fd14b35e3f81af3817a20ae7adae7020",
+                "17a20ae7adae7020",
+            )?;
+            let t1 = aes_encrypt_with_key(
+                &json!(format!("|{clienttime}")),
+                "5e4ef500e9597fe004bd09a46d8add98",
+                "04bd09a46d8add98",
+            )?;
+            let mut data = Map::from_iter([
+                ("plat".to_owned(), json!(1)),
+                ("support_multi".to_owned(), json!(1)),
+                (
+                    "t1".to_owned(),
+                    if is_lite { json!(t1) } else { json!(0) },
+                ),
+                (
+                    "t2".to_owned(),
+                    if is_lite { json!(t2) } else { json!(0) },
+                ),
+                ("clienttime_ms".to_owned(), json!(clienttime)),
+                (
+                    "key".to_owned(),
+                    json!(sign_params_key(clienttime, is_lite)),
+                ),
+                (
+                    "pk".to_owned(),
+                    json!(rsa_raw_encrypt(
+                        &json!({ "clienttime_ms": clienttime, "key": aes_key }),
+                        is_lite,
+                    )?
+                    .to_uppercase()),
+                ),
+                ("params".to_owned(), json!(encrypted_params)),
+            ]);
+            if let Some(mobile) = params.get("mobile").filter(|value| truthy(value)) {
+                let mobile = js_string(mobile);
+                let masked = format!(
+                    "{}*****{}",
+                    mobile.chars().take(2).collect::<String>(),
+                    mobile.chars().nth(10).unwrap_or_default()
+                );
+                data.insert("mobile".to_owned(), json!(masked));
+            }
+            if let Some(userid) = params.get("userid").filter(|value| truthy(value)) {
+                data.insert("userid".to_owned(), userid.clone());
+            }
+            if is_lite {
+                data.insert(
+                    "dfid".to_owned(),
+                    cookie_value(params, "dfid")
+                        .filter(|value| !value.is_null())
+                        .unwrap_or_else(|| json!(random_alphanumeric(24))),
+                );
+                data.insert(
+                    "dev".to_owned(),
+                    cookie_value(params, "KUGOU_API_DEV").unwrap_or(Value::Null),
+                );
+                data.insert("gitversion".to_owned(), json!("5f0b7c4"));
+            } else {
+                data.insert("t3".to_owned(), json!("MCwwLDAsMCwwLDAsMCwwLDA="));
+            }
+            let mut response = android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v7/login_by_verifycode")
+                    .base_url("https://loginserviceretry.kugou.com")
+                    .data(Value::Object(data))
+                    .header("support-calm", "1")
+                    .header("User-Agent", "Android16-1070-11440-130-0-LOGIN-wifi"),
+            )
+            .await?;
+            finish_login(&mut response, &aes_key, true)?;
+            Ok(response)
+        }
         "login_wx_check" => login_wx_check(client, params).await,
+        "lyric" => {
+            let mut response = android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::get("/download")
+                    .base_url("https://lyrics.kugou.com")
+                    .params(json!({
+                        "ver": 1,
+                        "client": value_or(params, "client", json!("android")),
+                        "id": value(params, "id"),
+                        "accesskey": value(params, "accesskey"),
+                        "fmt": value_or(params, "fmt", json!("krc")),
+                        "charset": "utf8",
+                    })),
+            )
+            .await?;
+            if params.get("decode").is_some_and(truthy)
+                && let Some(content) = response
+                    .body
+                    .get("content")
+                    .filter(|value| truthy(value))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            {
+                let plain = params.get("fmt").and_then(Value::as_str) == Some("lrc")
+                    || !number_is_zero(response.body.get("contenttype"));
+                let decoded = if plain {
+                    BASE64
+                        .decode(content)
+                        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                        .unwrap_or_default()
+                } else {
+                    decode_krc(&content)
+                };
+                if let Some(body) = response.body.as_object_mut() {
+                    body.insert("decodeContent".to_owned(), json!(decoded));
+                }
+            }
+            Ok(response)
+        }
         "lastest_songs_listen" => {
             android_request(
                 client,
@@ -3693,6 +3930,29 @@ fn input_bytes(params: &Value, name: &str) -> Result<Vec<u8>, String> {
     BASE64.decode(encoded).map_err(|error| error.to_string())
 }
 
+fn decode_krc(content: &str) -> String {
+    use std::io::Read as _;
+
+    let Ok(bytes) = BASE64.decode(content) else {
+        return String::new();
+    };
+    let key = [
+        64, 71, 97, 119, 94, 50, 116, 71, 81, 54, 49, 45, 206, 210, 110, 105,
+    ];
+    let decoded = bytes
+        .get(4..)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| byte ^ key[index % key.len()])
+        .collect::<Vec<_>>();
+    let mut output = String::new();
+    flate2::read::ZlibDecoder::new(decoded.as_slice())
+        .read_to_string(&mut output)
+        .map(|_| output)
+        .unwrap_or_default()
+}
+
 fn enrich_cloud_match(body: &mut Value) {
     if body.get("status").and_then(Value::as_i64) != Some(1) {
         return;
@@ -3754,6 +4014,85 @@ fn enrich_cloud_match(body: &mut Value) {
             matches.first().cloned().unwrap_or(Value::Null),
         );
     }
+}
+
+fn finish_login(
+    response: &mut ModuleResponse,
+    aes_key: &str,
+    include_t1: bool,
+) -> Result<(), String> {
+    if response.body.get("status").and_then(Value::as_i64) != Some(1) {
+        return Ok(());
+    }
+    let encrypted = response
+        .body
+        .pointer("/data/secu_params")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(encrypted) = encrypted {
+        let decrypted = aes_decrypt_random(&encrypted, aes_key)?;
+        let data = response
+            .body
+            .get_mut("data")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| "login response data must be an object".to_owned())?;
+        if let Some(values) = decrypted.as_object() {
+            for (name, value) in values {
+                data.insert(name.clone(), value.clone());
+                response.cookie.push(format!("{name}={}", js_string(value)));
+            }
+        } else {
+            data.insert("token".to_owned(), decrypted.clone());
+            if !include_t1 {
+                response
+                    .cookie
+                    .push(format!("token={}", js_string(&decrypted)));
+            }
+        }
+    } else if !include_t1 {
+        return Ok(());
+    }
+    let data = response
+        .body
+        .get("data")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "login response data must be an object".to_owned())?;
+    if include_t1 {
+        response.cookie.push(format!(
+            "t1={}",
+            data.get("t1")
+                .map(js_string)
+                .unwrap_or_else(|| "undefined".to_owned())
+        ));
+        response.cookie.push(format!(
+            "token={}",
+            data.get("token")
+                .map(js_string)
+                .unwrap_or_else(|| "undefined".to_owned())
+        ));
+    }
+    response.cookie.push(format!(
+        "userid={}",
+        data.get("userid")
+            .filter(|value| truthy(value))
+            .map(js_string)
+            .unwrap_or_else(|| "0".to_owned())
+    ));
+    response.cookie.push(format!(
+        "vip_type={}",
+        data.get("vip_type")
+            .filter(|value| truthy(value))
+            .map(js_string)
+            .unwrap_or_else(|| "0".to_owned())
+    ));
+    response.cookie.push(format!(
+        "vip_token={}",
+        data.get("vip_token")
+            .filter(|value| truthy(value))
+            .map(js_string)
+            .unwrap_or_default()
+    ));
+    Ok(())
 }
 
 fn enrich_ip_zone(body: &mut Value) {
@@ -3845,6 +4184,14 @@ fn unix_time_millis() -> Result<u64, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_millis() as u64)
+}
+
+fn random_alphanumeric(length: usize) -> String {
+    rand::rng()
+        .sample_iter(Alphanumeric)
+        .take(length)
+        .map(char::from)
+        .collect()
 }
 
 fn platform_config() -> (u16, u32, bool) {
@@ -3974,9 +4321,6 @@ async fn android_request_inner(
         .map_err(|error| error.to_string())?;
     append_query(&mut url, &query);
     let mut request = client.request(options.method, url);
-    for (name, value) in options.headers {
-        request = request.header(name, value);
-    }
     request = request
         .header(
             header::USER_AGENT,
@@ -3991,6 +4335,9 @@ async fn android_request_inner(
         .header("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F")
         .header("X-Real-IP", ip.to_string())
         .header("X-Forwarded-For", ip.to_string());
+    for (name, value) in options.headers {
+        request = request.header(name, value);
+    }
     if let Some(data) = options.raw_data {
         request = request.body(data);
     } else if let Some(data) = options.data {
@@ -4191,6 +4538,46 @@ fn aes_cbc_encrypt(data: &[u8], key: &str, iv: &str) -> Result<Vec<u8>, String> 
     }
 }
 
+fn aes_cbc_decrypt(data: &[u8], key: &str, iv: &str) -> Result<Vec<u8>, String> {
+    use cbc::cipher::{BlockDecryptMut as _, KeyIvInit as _, block_padding::Pkcs7};
+
+    let result = match key.len() {
+        16 => cbc::Decryptor::<aes::Aes128>::new_from_slices(key.as_bytes(), iv.as_bytes())
+            .map_err(|error| error.to_string())?
+            .decrypt_padded_vec_mut::<Pkcs7>(data),
+        24 => cbc::Decryptor::<aes::Aes192>::new_from_slices(key.as_bytes(), iv.as_bytes())
+            .map_err(|error| error.to_string())?
+            .decrypt_padded_vec_mut::<Pkcs7>(data),
+        32 => cbc::Decryptor::<aes::Aes256>::new_from_slices(key.as_bytes(), iv.as_bytes())
+            .map_err(|error| error.to_string())?
+            .decrypt_padded_vec_mut::<Pkcs7>(data),
+        _ => return Err("AES key must be 16, 24, or 32 bytes".to_owned()),
+    };
+    result.map_err(|error| error.to_string())
+}
+
+fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
+    if !value.len().is_multiple_of(2) {
+        return Err("hex input must have an even length".to_owned());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            std::str::from_utf8(pair)
+                .map_err(|error| error.to_string())
+                .and_then(|pair| u8::from_str_radix(pair, 16).map_err(|error| error.to_string()))
+        })
+        .collect()
+}
+
+fn aes_decrypt_random(data: &str, temporary_key: &str) -> Result<Value, String> {
+    let key = format!("{:x}", md5::compute(temporary_key));
+    let text = String::from_utf8(aes_cbc_decrypt(&hex_decode(data)?, &key, &key[16..])?)
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+}
+
 fn aes_encrypt_with_key(data: &Value, key: &str, iv: &str) -> Result<String, String> {
     Ok(hex_encode(&aes_cbc_encrypt(
         js_string(data).as_bytes(),
@@ -4302,7 +4689,7 @@ mod tests {
     #[test]
     fn manifest_only_lists_implemented_handlers() {
         let modules = modules().expect("native manifest should be valid JSON");
-        assert_eq!(modules.len(), 153);
+        assert_eq!(modules.len(), 155);
         assert!(modules.iter().all(|module| supports(module)));
     }
 
@@ -4396,6 +4783,14 @@ mod tests {
             )
             .unwrap(),
             "d9d6ad01cbe0db5f8cf79b8b60ad75f2"
+        );
+    }
+
+    #[test]
+    fn krc_decoder_matches_node_vector() {
+        assert_eq!(
+            decode_krc("a3JjMTjb6kFugkZ3gQUBpeObQ0c58deQm8gqRxBYOWk="),
+            "[00:00.00]test歌词"
         );
     }
 }

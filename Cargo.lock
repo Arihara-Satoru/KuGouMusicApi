@@ -826,6 +826,7 @@ dependencies = [
  "base64",
  "cbc",
  "dotenvy",
+ "flate2",
  "http",
  "md5",
  "png",
