@@ -1,6 +1,8 @@
 # KuGouMusic API
 
-酷狗音乐 NodeJS 版 API
+酷狗音乐 Rust 版 API
+
+169 个接口均由原生 Rust 实现；Node.js 源码仅保留作行为对照测试，生产运行不依赖 Node.js 或 QuickJS。
 
 [![](https://img.shields.io/badge/Author-MakcRe-blueviolet?style=for-the-badge '作者')](https://github.com/MakcRe)
 ![](https://img.shields.io/badge/dynamic/json?label=GitHub%20Followers&style=for-the-badge&query=%24.data.totalSubs&url=https%3A%2F%2Fapi.spencerwoo.com%2Fsubstats%2F%3Fsource%3Dgithub%26queryKey%3DMakcRe&labelColor=282c34&color=181717&logo=github&longCache=true '关注数量')
@@ -14,7 +16,7 @@
 [//]: # '<br>'
 
 ![](https://img.shields.io/github/package-json/v/MakcRe/KuGouMusicApi?longCache=true&style=for-the-badge)
-![](https://img.shields.io/badge/Node-12+-green.svg?longCache=true&style=for-the-badge)
+![](https://img.shields.io/badge/Rust-1.93+-orange.svg?longCache=true&style=for-the-badge)
 ![](https://img.shields.io/badge/License-mit-blue.svg?longCache=true&style=for-the-badge)
 
 ## 灵感来自
@@ -23,7 +25,7 @@
 
 ## 环境要求
 
-需要 NodeJS 12+ 环境
+运行服务需要 Rust 1.93+。只有执行 Node/Rust 对照测试或运行旧版服务时才需要 Node.js。
 
 ## 工作原理
 
@@ -47,7 +49,7 @@
 ```shell
 $ git clone git@github.com:MakcRe/KuGouMusicApi.git
 $ cd KuGouMusicApi
-$ npm install
+$ cargo build --release --locked
 ```
 
 ### 使用接口为概念版
@@ -60,43 +62,43 @@ $ 注意不同版本的平台的 token 是不通用的。
 ### 运行
 
 ```shell
-$ npm run dev
+$ cargo run --release --locked
 ```
 
-服务器启动默认端口为 36530, 若不想使用 36530 端口 , 可使用以下命令 : Mac/Linux
+服务器启动默认端口为 3000，若需修改端口，可使用以下命令：Mac/Linux
 
 ```shell
-$ PORT=4000 npm run dev
+$ PORT=4000 cargo run --release --locked
 ```
 
 windows 下使用 git-bash 或者 cmder 等终端执行以下命令 :
 
 ```shell
-$ set PORT=4000 && npm run dev
+$ set PORT=4000 && cargo run --release --locked
 ```
 
 windows 下使用 PowerShell 等终端执行以下命令 :
 
 ```shell
-$ $Env:PORT=4000; npm run dev
+$ $Env:PORT=4000; cargo run --release --locked
 ```
 
 服务器启动默认 host 为 localhost,如果需要更改, 可使用以下命令 : Mac/Linux
 
 ```shell
-$ HOST=127.0.0.1 npm run dev
+$ HOST=127.0.0.1 cargo run --release --locked
 ```
 
 windows 下使用 git-bash 或者 cmder 等终端执行以下命令 :
 
 ```shell
-$ set HOST=127.0.0.1 && npm run dev
+$ set HOST=127.0.0.1 && cargo run --release --locked
 ```
 
 windows 下使用 PowerShell 等终端执行以下命令 :
 
 ```shell
-$ $Env:HOST=127.0.0.1; npm run dev
+$ $Env:HOST=127.0.0.1; cargo run --release --locked
 ```
 
 ### 代理配置
@@ -104,13 +106,13 @@ $ $Env:HOST=127.0.0.1; npm run dev
 如需通过 HTTP 代理请求酷狗接口，可在启动前设置 `KUGOU_API_PROXY` 环境变量，例如:
 
 ```shell
-$ $Env:KUGOU_API_PROXY='http://127.0.0.1:7890'; npm run dev
+$ $Env:KUGOU_API_PROXY='http://127.0.0.1:7890'; cargo run --release --locked
 ```
 
 也可以在启动命令后追加代理参数:
 
 ```shell
-$ node app.js --proxy=http://127.0.0.1:7890
+$ cargo run --release -- --proxy=http://127.0.0.1:7890
 ```
 
 ## Vercel 部署

@@ -1,19 +1,8 @@
-FROM node:lts-bookworm-slim AS compat
-WORKDIR /app
-RUN corepack enable
-COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
-COPY module ./module
-COPY util ./util
-COPY rust-compat ./rust-compat
-COPY scripts/build-rust-compat.cjs ./scripts/build-rust-compat.cjs
-RUN node scripts/build-rust-compat.cjs
-
 FROM rust:1.93-bookworm AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY rust-src ./rust-src
-COPY --from=compat /app/rust-assets ./rust-assets
+COPY rust-native.json ./
 RUN cargo build --release --locked
 
 FROM debian:bookworm-slim

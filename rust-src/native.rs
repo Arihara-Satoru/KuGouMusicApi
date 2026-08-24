@@ -9,10 +9,6 @@ pub fn modules() -> Result<Vec<String>, String> {
     Ok(module_manifest()?.clone())
 }
 
-pub fn supports(module: &str) -> bool {
-    module_manifest().is_ok_and(|modules| modules.iter().any(|native| native == module))
-}
-
 fn module_manifest() -> Result<&'static Vec<String>, String> {
     static MODULES: std::sync::OnceLock<Result<Vec<String>, String>> = std::sync::OnceLock::new();
     MODULES
@@ -3628,91 +3624,8 @@ pub async fn invoke(
             )
             .await
         }
-        "user_cloud_match" => {
-            let (default_appid, default_clientver, is_lite) = platform_config();
-            let request_appid = value_or(params, "appid", json!(default_appid));
-            let request_clientver = value_or(params, "clientver", json!(default_clientver));
-            let clienttime = unix_time_millis()? / 1000;
-            let hashes = split_values(value(params, "hash"));
-            if hashes.is_empty() {
-                return Ok(ModuleResponse {
-                    status: 500,
-                    body: json!({ "status": 0, "msg": "请传入 hash，或通过请求体传入文件二进制数据" }),
-                    cookie: Vec::new(),
-                    headers: HashMap::new(),
-                });
-            }
-            let album_audio_ids = split_values(
-                params
-                    .get("album_audio_ids")
-                    .filter(|value| truthy(value))
-                    .or_else(|| params.get("album_audio_id").filter(|value| truthy(value)))
-                    .or_else(|| params.get("mixid").filter(|value| truthy(value)))
-                    .or_else(|| params.get("mix_id").filter(|value| truthy(value)))
-                    .cloned()
-                    .unwrap_or(Value::Null),
-            );
-            let data = hashes
-                .iter()
-                .enumerate()
-                .map(|(index, hash)| {
-                    let mut item = Map::from_iter([(
-                        "hash".to_owned(),
-                        json!(hash.to_ascii_lowercase()),
-                    )]);
-                    if let Some(album_audio_id) = album_audio_ids
-                        .get(index)
-                        .or_else(|| album_audio_ids.first())
-                        .filter(|value| value.parse::<f64>().is_ok_and(|value| value > 0.0))
-                    {
-                        item.insert("album_audio_id".to_owned(), json!(album_audio_id));
-                    }
-                    Value::Object(item)
-                })
-                .collect::<Vec<_>>();
-            let salt = if is_lite {
-                "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA"
-            } else {
-                "OIlwieks28dk2k092lksi2UIkp"
-            };
-            let key = format!(
-                "{:x}",
-                md5::compute(format!(
-                    "{}{salt}{}{clienttime}",
-                    js_string(&request_appid),
-                    js_string(&request_clientver)
-                ))
-            );
-            let mut response = android_request(
-                client,
-                params,
-                ip,
-                NativeRequest::post("/v2/album_audio/audio")
-                    .base_url("http://kmr.service.kugou.com")
-                    .data(json!({
-                        "appid": request_appid,
-                        "clienttime": clienttime,
-                        "clientver": request_clientver,
-                        "data": data,
-                        "dfid": cookie_or_param(params, "dfid", json!("-")),
-                        "key": key,
-                        "mid": cookie_value(params, "KUGOU_API_MID")
-                            .filter(truthy)
-                            .unwrap_or_else(|| value_or(params, "mid", json!(""))),
-                        "show_privilege": 0,
-                        "show_author_alias": 0,
-                        "show_rel_album_audio_info": 0,
-                        "show_remarks": 0,
-                    }))
-                    .clear_default_params()
-                    .unsigned()
-                    .header("x-router", "kmr.service.kugou.com")
-                    .header("Content-Type", "application/json"),
-            )
-            .await?;
-            enrich_cloud_match(&mut response.body);
-            Ok(response)
-        }
+        "user_cloud_match" => user_cloud_match_request(client, params, ip).await,
+        "user_cloud_upload" => user_cloud_upload(client, params, ip).await,
         "user_cloud" => {
             let clienttime = unix_time_millis()? / 1000;
             let userid = param_or_cookie(params, "userid", json!(0));
@@ -4514,6 +4427,503 @@ fn platform_config() -> (u16, u32, bool) {
     } else {
         (1005, 20489, false)
     }
+}
+
+async fn user_cloud_match_request(
+    client: &Client,
+    params: &Value,
+    ip: IpAddr,
+) -> Result<ModuleResponse, String> {
+    let (default_appid, default_clientver, is_lite) = platform_config();
+    let request_appid = value_or(params, "appid", json!(default_appid));
+    let request_clientver = value_or(params, "clientver", json!(default_clientver));
+    let clienttime = unix_time_millis()? / 1000;
+    let hashes = split_values(value(params, "hash"));
+    if hashes.is_empty() {
+        return Ok(ModuleResponse {
+            status: 500,
+            body: json!({ "status": 0, "msg": "请传入 hash，或通过请求体传入文件二进制数据" }),
+            cookie: Vec::new(),
+            headers: HashMap::new(),
+        });
+    }
+    let album_audio_ids = split_values(
+        params
+            .get("album_audio_ids")
+            .filter(|value| truthy(value))
+            .or_else(|| params.get("album_audio_id").filter(|value| truthy(value)))
+            .or_else(|| params.get("mixid").filter(|value| truthy(value)))
+            .or_else(|| params.get("mix_id").filter(|value| truthy(value)))
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    let data = hashes
+        .iter()
+        .enumerate()
+        .map(|(index, hash)| {
+            let mut item = Map::from_iter([("hash".to_owned(), json!(hash.to_ascii_lowercase()))]);
+            if let Some(album_audio_id) = album_audio_ids
+                .get(index)
+                .or_else(|| album_audio_ids.first())
+                .filter(|value| value.parse::<f64>().is_ok_and(|value| value > 0.0))
+            {
+                item.insert("album_audio_id".to_owned(), json!(album_audio_id));
+            }
+            Value::Object(item)
+        })
+        .collect::<Vec<_>>();
+    let key = sign_params_key_config(clienttime, &request_appid, &request_clientver, is_lite);
+    let mut response = android_request(
+        client,
+        params,
+        ip,
+        NativeRequest::post("/v2/album_audio/audio")
+            .base_url("http://kmr.service.kugou.com")
+            .data(json!({
+                "appid": request_appid,
+                "clienttime": clienttime,
+                "clientver": request_clientver,
+                "data": data,
+                "dfid": cookie_or_param(params, "dfid", json!("-")),
+                "key": key,
+                "mid": cookie_value(params, "KUGOU_API_MID")
+                    .filter(truthy)
+                    .unwrap_or_else(|| value_or(params, "mid", json!(""))),
+                "show_privilege": 0,
+                "show_author_alias": 0,
+                "show_rel_album_audio_info": 0,
+                "show_remarks": 0,
+            }))
+            .clear_default_params()
+            .unsigned()
+            .header("x-router", "kmr.service.kugou.com")
+            .header("Content-Type", "application/json"),
+    )
+    .await?;
+    enrich_cloud_match(&mut response.body);
+    Ok(response)
+}
+
+fn bool_param(value: Option<&Value>, default: bool) -> bool {
+    let Some(value) = value.filter(|value| !value.is_null() && !js_string(value).is_empty()) else {
+        return default;
+    };
+    !matches!(
+        js_string(value).to_ascii_lowercase().as_str(),
+        "0" | "false" | "no"
+    )
+}
+
+fn integer_param(value: Value) -> i64 {
+    let value = number_value(value);
+    value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|value| value as i64))
+        .unwrap_or(0)
+}
+
+async fn bss_request(
+    client: &Client,
+    method: Method,
+    url: &str,
+    mut params: Map<String, Value>,
+    clientver: &str,
+    authorization: Option<&str>,
+    body: Option<Vec<u8>>,
+) -> Result<Value, String> {
+    let signature = signature_android(&params, "", platform_config().2);
+    params.insert("signature".to_owned(), json!(signature));
+    let mut url = Url::parse(url).map_err(|error| error.to_string())?;
+    append_query(&mut url, &params);
+    let mut request = client
+        .request(method, url)
+        .header(
+            header::USER_AGENT,
+            format!("Android15-1070-{clientver}-201-0-wifi"),
+        )
+        .header("KG-RC", "1")
+        .header("KG-Rec", "1")
+        .header(
+            "KG-THash",
+            format!("{:07x}", rand::rng().random_range(0..0xfffffff)),
+        );
+    if let Some(authorization) = authorization {
+        request = request.header(header::AUTHORIZATION, authorization);
+    }
+    if let Some(body) = body {
+        request = request
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body(body);
+    }
+    let response = request.send().await.map_err(|error| error.to_string())?;
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    let value = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
+    if !status.is_success() {
+        return Err(js_string(&value));
+    }
+    Ok(value)
+}
+
+async fn user_cloud_upload(
+    client: &Client,
+    params: &Value,
+    ip: IpAddr,
+) -> Result<ModuleResponse, String> {
+    match user_cloud_upload_inner(client, params, ip).await {
+        Ok(response) => Ok(response),
+        Err(message) => Ok(ModuleResponse {
+            status: 500,
+            body: json!({
+                "status": 0,
+                "msg": message,
+                "stack": "native Rust user_cloud_upload",
+            }),
+            cookie: Vec::new(),
+            headers: HashMap::new(),
+        }),
+    }
+}
+
+async fn user_cloud_upload_inner(
+    client: &Client,
+    params: &Value,
+    ip: IpAddr,
+) -> Result<ModuleResponse, String> {
+    let file_data = input_bytes(params, "data")?;
+    if file_data.is_empty() {
+        return Err("请通过请求体传入文件二进制数据".to_owned());
+    }
+    let (default_appid, default_clientver, is_lite) = platform_config();
+    let request_appid = value_or(params, "appid", json!(default_appid));
+    let request_clientver = value_or(params, "clientver", json!(default_clientver));
+    let clientver = js_string(&request_clientver);
+    let userid = js_string(&param_or_cookie(params, "userid", json!(0)));
+    let token = param_or_cookie(params, "token", json!(""));
+    let mid = cookie_value(params, "KUGOU_API_MID")
+        .filter(truthy)
+        .unwrap_or_else(|| value_or(params, "mid", json!("")));
+    let dfid = cookie_value(params, "dfid")
+        .filter(truthy)
+        .unwrap_or_else(|| value_or(params, "dfid", json!("-")));
+    let uuid = cookie_value(params, "KUGOU_API_GUID")
+        .filter(truthy)
+        .unwrap_or_else(|| value_or(params, "uuid", json!("-")));
+    let filename = js_string(&value_or(
+        params,
+        "filename",
+        json!(format!("{:x}", md5::compute(&file_data))),
+    ))
+    .to_ascii_lowercase();
+    let extendname = js_string(&value_or(params, "extendname", json!("mp3")))
+        .trim_start_matches('.')
+        .to_owned();
+    let provided_match = truthy(&value(params, "hash_std"))
+        && truthy(&value(params, "audio_id"))
+        && ["album_audio_id", "mixid", "mix_id"]
+            .into_iter()
+            .any(|name| truthy(&value(params, name)));
+    let match_info = if bool_param(params.get("auto_match"), true) && !provided_match {
+        let mut match_params = params.as_object().cloned().unwrap_or_default();
+        match_params.remove("data");
+        match_params.insert("hash".to_owned(), json!(filename));
+        match_params.insert("appid".to_owned(), request_appid.clone());
+        match_params.insert("clientver".to_owned(), request_clientver.clone());
+        let response = user_cloud_match_request(client, &Value::Object(match_params), ip).await?;
+        if response.body.get("status").and_then(Value::as_i64) == Some(1) {
+            response.body.get("match").cloned()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let match_value = |name: &str| {
+        match_info
+            .as_ref()
+            .and_then(|value| value.get(name))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let hash_std = js_string(&value_or(
+        params,
+        "hash_std",
+        if truthy(&match_value("hash_std")) {
+            match_value("hash_std")
+        } else {
+            json!(filename)
+        },
+    ))
+    .to_ascii_lowercase();
+    let audio_id = integer_param(value_or(params, "audio_id", match_value("audio_id")));
+    let album_audio_id = ["album_audio_id", "mixid", "mix_id"]
+        .into_iter()
+        .find_map(|name| params.get(name).filter(|value| truthy(value)).cloned())
+        .map(integer_param)
+        .unwrap_or_else(|| integer_param(match_value("album_audio_id")));
+    let author_name = value_or(
+        params,
+        "author_name",
+        if truthy(&match_value("author_name")) {
+            match_value("author_name")
+        } else {
+            json!("")
+        },
+    );
+    let track_name = params
+        .get("track_name")
+        .filter(|value| truthy(value))
+        .cloned()
+        .or_else(|| {
+            params
+                .get("songname")
+                .filter(|value| truthy(value))
+                .cloned()
+        })
+        .or_else(|| match_info.as_ref()?.get("audio_name").cloned())
+        .unwrap_or_else(|| json!(filename));
+    let name = value_or(
+        params,
+        "name",
+        json!(format!(
+            "{}{}.{}",
+            if truthy(&author_name) {
+                format!("{} - ", js_string(&author_name))
+            } else {
+                String::new()
+            },
+            js_string(&track_name),
+            extendname
+        )),
+    );
+    let bucket = "musicclound";
+    let bss_verify_code = format!(
+        "{:x}",
+        md5::compute(format!(
+            "{}{bucket}8ae10344e9738dcb",
+            js_string(&request_appid)
+        ))
+    );
+    let common = |clienttime: u64| {
+        [
+            ("userid".to_owned(), json!(userid)),
+            ("token".to_owned(), token.clone()),
+            ("dfid".to_owned(), dfid.clone()),
+            ("mid".to_owned(), mid.clone()),
+            ("uuid".to_owned(), uuid.clone()),
+            ("appid".to_owned(), request_appid.clone()),
+            ("clientver".to_owned(), request_clientver.clone()),
+            ("clienttime".to_owned(), json!(clienttime)),
+        ]
+    };
+
+    let mut auth = Map::from_iter([
+        ("bucket".to_owned(), json!(bucket)),
+        ("filename".to_owned(), json!(filename)),
+        ("method".to_owned(), json!("POST")),
+        (
+            "loginType".to_owned(),
+            json!(u8::from(truthy(&token) && userid != "0")),
+        ),
+        ("buVerifyCode".to_owned(), json!(bss_verify_code)),
+        ("extranet".to_owned(), json!(1)),
+        ("version".to_owned(), request_clientver.clone()),
+    ]);
+    auth.extend(common(unix_time_millis()? / 1000));
+    let auth_response = bss_request(
+        client,
+        Method::GET,
+        "https://gateway.kugou.com/bsstrackercdngz/v1/upload/auth",
+        auth,
+        &clientver,
+        None,
+        None,
+    )
+    .await?;
+    let authorization = auth_response
+        .pointer("/data/authorization")
+        .filter(|value| truthy(value))
+        .map(js_string)
+        .ok_or_else(|| js_string(&auth_response))?;
+
+    let mut initiate = Map::from_iter([
+        ("bucket".to_owned(), json!(bucket)),
+        ("filename".to_owned(), json!(filename)),
+        ("ssl".to_owned(), json!(1)),
+        ("extendname".to_owned(), json!(extendname)),
+        ("version".to_owned(), request_clientver.clone()),
+        ("authorization".to_owned(), json!(authorization)),
+    ]);
+    initiate.extend(common(unix_time_millis()? / 1000));
+    let initiate_response = bss_request(
+        client,
+        Method::POST,
+        "http://bssulbig.kugou.com/v2/multipart/initiate/music",
+        initiate,
+        &clientver,
+        Some(&authorization),
+        None,
+    )
+    .await?;
+    let initiate_data = initiate_response
+        .get("data")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let external_host = initiate_data
+        .get("external_host")
+        .filter(|value| truthy(value))
+        .map(js_string);
+    let upload_id = initiate_data
+        .get("upload_id")
+        .filter(|value| truthy(value))
+        .map(js_string);
+    let mut bss_file_hash = initiate_data
+        .get("x-bss-filename")
+        .filter(|value| truthy(value))
+        .map(js_string)
+        .unwrap_or_else(|| filename.clone());
+
+    if let Some(upload_id) = upload_id.as_deref() {
+        let external_host = external_host
+            .as_deref()
+            .ok_or_else(|| js_string(&initiate_response))?;
+        let base = if external_host.starts_with("http://") || external_host.starts_with("https://")
+        {
+            external_host.to_owned()
+        } else {
+            format!("http://{external_host}")
+        };
+        let parts = file_data.chunks(1024 * 1024).collect::<Vec<_>>();
+        for (index, part) in parts.iter().enumerate() {
+            let mut upload = Map::from_iter([
+                ("bucket".to_owned(), json!(bucket)),
+                ("authorization".to_owned(), json!(authorization)),
+                ("filename".to_owned(), json!(filename)),
+                ("partnumber".to_owned(), json!(index + 1)),
+                ("upload_id".to_owned(), json!(upload_id)),
+                ("body_empty".to_owned(), json!(1)),
+                ("version".to_owned(), request_clientver.clone()),
+            ]);
+            upload.extend(common(unix_time_millis()? / 1000));
+            let response = bss_request(
+                client,
+                Method::POST,
+                &format!("{base}/v3/multipart/upload"),
+                upload,
+                &clientver,
+                Some(&authorization),
+                Some(part.to_vec()),
+            )
+            .await?;
+            if response.get("status").and_then(Value::as_i64) != Some(1) {
+                return Err(js_string(&response));
+            }
+        }
+        let mut complete = Map::from_iter([
+            ("bucket".to_owned(), json!(bucket)),
+            ("authorization".to_owned(), json!(authorization)),
+            ("filename".to_owned(), json!(filename)),
+            ("partnumber".to_owned(), json!(parts.len())),
+            ("upload_id".to_owned(), json!(upload_id)),
+            ("md5".to_owned(), json!(filename)),
+            ("version".to_owned(), request_clientver.clone()),
+            ("if_id3".to_owned(), json!(1)),
+        ]);
+        complete.extend(common(unix_time_millis()? / 1000));
+        let response = bss_request(
+            client,
+            Method::POST,
+            &format!("{base}/v3/multipart/complete"),
+            complete,
+            &clientver,
+            Some(&authorization),
+            None,
+        )
+        .await?;
+        if response.get("status").and_then(Value::as_i64) != Some(1) {
+            return Err(js_string(&response));
+        }
+        if let Some(value) = response
+            .pointer("/data/x-bss-filename")
+            .filter(|value| truthy(value))
+        {
+            bss_file_hash = js_string(value);
+        }
+    }
+
+    let bitrate = integer_param(value_or(params, "bitrate", json!(4)));
+    let bitrate = if bitrate == 0 { 4 } else { bitrate };
+    let encrypted = playlist_aes_encrypt(&json!({
+        "data": [{
+            "name": name,
+            "ext": extendname,
+            "author_name": author_name,
+            "hash": bss_file_hash,
+            "hash_std": hash_std,
+            "audio_id": audio_id,
+            "bitrate": bitrate,
+            "album_audio_id": album_audio_id,
+            "size": file_data.len(),
+            "timelen": integer_param(value_or(params, "timelen", json!(0))),
+        }],
+        "list_ver": integer_param(value_or(params, "list_ver", json!(0))),
+    }))?;
+    let p = rsa_pkcs1_encrypt(
+        &json!({ "aes": encrypted.key, "uid": userid, "token": token }),
+        is_lite,
+    )?
+    .to_uppercase();
+    let clienttime = unix_time_millis()? / 1000;
+    let mut response = android_request_inner(
+        client,
+        params,
+        ip,
+        NativeRequest::post("/v1/add_files")
+            .base_url("https://mcloudservice.kugou.com")
+            .params(json!({
+                "clienttime": clienttime,
+                "mid": mid,
+                "key": sign_params_key_config(
+                    clienttime,
+                    &request_appid,
+                    &request_clientver,
+                    is_lite,
+                ),
+                "clientver": request_clientver,
+                "appid": request_appid,
+                "p": p,
+            }))
+            .raw_data(encrypted.bytes)
+            .clear_default_params()
+            .unsigned()
+            .decrypt_playlist_response(encrypted.key, true),
+    )
+    .await?;
+    if response.status != 200 {
+        return Err(js_string(&response.body));
+    }
+    if let Some(body) = response.body.as_object_mut() {
+        let mut upload_info = Map::from_iter([
+            ("authorization".to_owned(), json!(authorization)),
+            ("hash".to_owned(), json!(bss_file_hash)),
+            ("local_hash".to_owned(), json!(filename)),
+            ("hash_std".to_owned(), json!(hash_std)),
+            ("audio_id".to_owned(), json!(audio_id)),
+            ("album_audio_id".to_owned(), json!(album_audio_id)),
+            ("matched".to_owned(), json!(match_info.is_some())),
+            ("filesize".to_owned(), json!(file_data.len())),
+        ]);
+        if let Some(external_host) = external_host {
+            upload_info.insert("external_host".to_owned(), json!(external_host));
+        }
+        if let Some(upload_id) = upload_id {
+            upload_info.insert("upload_id".to_owned(), json!(upload_id));
+        }
+        body.insert("uploadInfo".to_owned(), Value::Object(upload_info));
+    }
+    Ok(response)
 }
 
 async fn user_grade_info(
@@ -5694,8 +6104,7 @@ mod tests {
     #[test]
     fn manifest_only_lists_implemented_handlers() {
         let modules = modules().expect("native manifest should be valid JSON");
-        assert_eq!(modules.len(), 168);
-        assert!(modules.iter().all(|module| supports(module)));
+        assert_eq!(modules.len(), 169);
     }
 
     #[test]

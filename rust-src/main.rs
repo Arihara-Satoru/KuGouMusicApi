@@ -18,8 +18,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use qrcode::{Color, QrCode};
 use rand::{Rng as _, distr::Alphanumeric};
 use reqwest::Client;
-use rquickjs::{AsyncContext, AsyncRuntime, Function, Promise, function::Async};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use tower_http::services::{ServeDir, ServeFile};
 use url::Url;
@@ -27,20 +26,13 @@ use uuid::Uuid;
 
 mod native;
 
-const COMPAT_SOURCE: &str = include_str!("../rust-assets/compat.js");
 const MAX_BODY_BYTES: usize = 100 * 1024 * 1024;
 
 #[derive(Clone)]
 struct AppState {
-    js: Arc<JsEngine>,
     client: Client,
     device: Arc<DeviceIdentity>,
     cache: Arc<Mutex<HashMap<String, (Instant, ModuleResponse)>>>,
-}
-
-struct JsEngine {
-    _runtime: AsyncRuntime,
-    context: AsyncContext,
 }
 
 #[derive(Debug)]
@@ -53,121 +45,17 @@ struct DeviceIdentity {
     webgl: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct ModuleResponse {
-    #[serde(default = "default_status")]
     status: u16,
-    #[serde(default)]
     body: Value,
-    #[serde(default)]
     cookie: Vec<String>,
-    #[serde(default)]
     headers: HashMap<String, Value>,
 }
 
 #[derive(Debug, Serialize)]
 struct WireBuffer<'a> {
     __kugou_buffer__: &'a str,
-}
-
-fn default_status() -> u16 {
-    500
-}
-
-impl JsEngine {
-    async fn new(client: Client, environment: HashMap<String, String>) -> Result<Self, String> {
-        let runtime = AsyncRuntime::new()
-            .map_err(|error| format!("failed to create JavaScript runtime: {error:?}"))?;
-        let context = AsyncContext::full(&runtime)
-            .await
-            .map_err(|error| format!("failed to create JavaScript context: {error:?}"))?;
-
-        context
-            .async_with(async |ctx| {
-                let client = client.clone();
-                let bridge = Function::new(
-                    ctx.clone(),
-                    Async(move |input: String| {
-                        let client = client.clone();
-                        async move { Ok::<_, rquickjs::Error>(raw_http(&client, &input).await) }
-                    }),
-                )
-                .map_err(|error| error.to_string())?;
-                ctx.globals()
-                    .set("__rust_http", bridge)
-                    .map_err(|error| error.to_string())?;
-                let qrcode = Function::new(ctx.clone(), |text: String| {
-                    qrcode_data_url(&text).map_err(|message| {
-                        rquickjs::Error::new_from_js_message("String", "QR code", message)
-                    })
-                })
-                .map_err(|error| error.to_string())?;
-                ctx.globals()
-                    .set("__rust_qrcode", qrcode)
-                    .map_err(|error| error.to_string())?;
-                ctx.eval::<(), _>(COMPAT_SOURCE)
-                    .map_err(|error| format_js_error(&ctx, error))?;
-
-                let set_env: Function = ctx
-                    .globals()
-                    .get("__kugou_set_env")
-                    .map_err(|error| error.to_string())?;
-                let env_json =
-                    serde_json::to_string(&environment).map_err(|error| error.to_string())?;
-                set_env
-                    .call::<_, ()>((env_json,))
-                    .map_err(|error| format_js_error(&ctx, error))?;
-                Ok::<_, String>(())
-            })
-            .await?;
-
-        Ok(Self {
-            _runtime: runtime,
-            context,
-        })
-    }
-
-    async fn invoke(
-        &self,
-        module: &str,
-        params: Value,
-        ip: IpAddr,
-    ) -> Result<ModuleResponse, String> {
-        let module = module.to_owned();
-        let params = serde_json::to_string(&params).map_err(|error| error.to_string())?;
-        let ip = ip.to_string();
-        let result = self
-            .context
-            .async_with(async move |ctx| {
-                let invoke: Function = ctx
-                    .globals()
-                    .get("__kugou_invoke")
-                    .map_err(|error| error.to_string())?;
-                let promise: Promise = invoke
-                    .call((module, params, ip))
-                    .map_err(|error| format_js_error(&ctx, error))?;
-                promise
-                    .into_future::<String>()
-                    .await
-                    .map_err(|error| format_js_error(&ctx, error))
-            })
-            .await?;
-
-        serde_json::from_str(&result).map_err(|error| format!("invalid module response: {error}"))
-    }
-}
-
-fn format_js_error(ctx: &rquickjs::Ctx<'_>, error: rquickjs::Error) -> String {
-    if error.is_exception() {
-        let caught = ctx.catch();
-        if let Some(exception) = caught.as_exception() {
-            let message = exception.message().unwrap_or_else(|| error.to_string());
-            return exception
-                .stack()
-                .map_or(message.clone(), |stack| format!("{message}\n{stack}"));
-        }
-    }
-    error.to_string()
 }
 
 fn qrcode_data_url(text: &str) -> Result<String, String> {
@@ -206,127 +94,6 @@ fn qrcode_data_url(text: &str) -> Result<String, String> {
         "data:image/png;base64,{}",
         BASE64.encode(png_bytes)
     ))
-}
-
-async fn raw_http(client: &Client, input: &str) -> String {
-    match raw_http_inner(client, input).await {
-        Ok(response) => serde_json::to_string(&response).unwrap_or_else(wire_json_error),
-        Err(error) => serde_json::to_string(&json!({
-            "__error__": true,
-            "message": error,
-        }))
-        .unwrap_or_else(wire_json_error),
-    }
-}
-
-async fn raw_http_inner(client: &Client, input: &str) -> Result<Value, String> {
-    let options: Value = serde_json::from_str(input).map_err(|error| error.to_string())?;
-    let object = options
-        .as_object()
-        .ok_or_else(|| "request options must be an object".to_owned())?;
-    let raw_url = string_field(object, "url").unwrap_or_default();
-    let base_url = string_field(object, "baseURL");
-    let mut url = if Url::parse(&raw_url).is_ok() {
-        Url::parse(&raw_url).map_err(|error| error.to_string())?
-    } else {
-        let base = base_url.unwrap_or_else(|| "https://gateway.kugou.com".to_owned());
-        Url::parse(&base)
-            .map_err(|error| error.to_string())?
-            .join(&raw_url)
-            .map_err(|error| error.to_string())?
-    };
-
-    if let Some(params) = object.get("params").and_then(Value::as_object) {
-        append_query(&mut url, params);
-    }
-
-    let method = string_field(object, "method")
-        .unwrap_or_else(|| "GET".to_owned())
-        .to_uppercase();
-    let method =
-        reqwest::Method::from_bytes(method.as_bytes()).map_err(|error| error.to_string())?;
-    let mut request = client.request(method, url);
-
-    if let Some(headers) = object.get("headers").and_then(Value::as_object) {
-        for (name, value) in headers {
-            if value.is_null() {
-                continue;
-            }
-            request = request.header(name, js_string(value));
-        }
-    }
-
-    if let Some(data) = object.get("data").filter(|value| !value.is_null()) {
-        if let Some(encoded) = data.get("__kugou_buffer__").and_then(Value::as_str) {
-            request = request.body(BASE64.decode(encoded).map_err(|error| error.to_string())?);
-        } else if data.is_object() || data.is_array() {
-            request = request.json(data);
-        } else if let Some(text) = data.as_str() {
-            request = request.body(text.to_owned());
-        } else {
-            request = request.body(js_string(data));
-        }
-    }
-
-    let response = request.send().await.map_err(|error| error.to_string())?;
-    let status = response.status();
-    let headers = response.headers().clone();
-    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-    let array_buffer = string_field(object, "responseType").as_deref() == Some("arraybuffer");
-    let data = if array_buffer {
-        json!(WireBuffer {
-            __kugou_buffer__: &BASE64.encode(&bytes),
-        })
-    } else {
-        serde_json::from_slice(&bytes)
-            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
-    };
-
-    let mut response_headers = Map::new();
-    for name in headers.keys() {
-        let values: Vec<String> = headers
-            .get_all(name)
-            .iter()
-            .filter_map(|value| value.to_str().ok().map(str::to_owned))
-            .collect();
-        response_headers.insert(
-            name.as_str().to_owned(),
-            if name == header::SET_COOKIE {
-                json!(values)
-            } else {
-                Value::String(values.join(", "))
-            },
-        );
-    }
-
-    let response = json!({
-        "data": data,
-        "headers": response_headers,
-        "status": status.as_u16(),
-    });
-    if status.is_success() {
-        Ok(response)
-    } else {
-        Ok(json!({
-            "__error__": true,
-            "message": format!("upstream returned HTTP {}", status.as_u16()),
-            "response": response,
-        }))
-    }
-}
-
-fn wire_json_error(error: serde_json::Error) -> String {
-    format!(
-        r#"{{"__error__":true,"message":{}}}"#,
-        json!(error.to_string())
-    )
-}
-
-fn string_field(object: &Map<String, Value>, name: &str) -> Option<String> {
-    object
-        .get(name)
-        .filter(|value| !value.is_null())
-        .map(js_string)
 }
 
 fn js_string(value: &Value) -> String {
@@ -441,20 +208,13 @@ async fn api_handler(
     let module_response = if let Some(response) = cached {
         response
     } else {
-        let result = if native::supports(&module) {
-            native::invoke(
-                &module,
-                &state.client,
-                &params,
-                client_ip.parse().unwrap_or(address.ip()),
-            )
-            .await
-        } else {
-            state
-                .js
-                .invoke(&module, params, client_ip.parse().unwrap_or(address.ip()))
-                .await
-        };
+        let result = native::invoke(
+            &module,
+            &state.client,
+            &params,
+            client_ip.parse().unwrap_or(address.ip()),
+        )
+        .await;
         let response = match result {
             Ok(response) => response,
             Err(message) => ModuleResponse {
@@ -773,10 +533,6 @@ fn device_identity() -> DeviceIdentity {
     }
 }
 
-fn environment() -> HashMap<String, String> {
-    std::env::vars().collect()
-}
-
 fn http_client() -> Result<Client, String> {
     let mut builder = Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
@@ -804,10 +560,10 @@ fn load_dotenv() {
 fn apply_cli_overrides() {
     for argument in std::env::args().skip(1) {
         if let Some(value) = argument.strip_prefix("--proxy=") {
-            // SAFETY: CLI overrides run before Tokio or the JS runtime starts any threads.
+            // SAFETY: CLI overrides run before Tokio starts any worker threads.
             unsafe { std::env::set_var("KUGOU_API_PROXY", value) };
         } else if let Some(value) = argument.strip_prefix("--platform=") {
-            // SAFETY: CLI overrides run before Tokio or the JS runtime starts any threads.
+            // SAFETY: CLI overrides run before Tokio starts any worker threads.
             unsafe { std::env::set_var("platform", value) };
         }
     }
@@ -819,25 +575,8 @@ async fn main() -> Result<(), String> {
     apply_cli_overrides();
 
     let client = http_client()?;
-    let js = Arc::new(
-        JsEngine::new(client.clone(), environment())
-            .await
-            .map_err(|error| format!("failed to initialize compatibility runtime: {error}"))?,
-    );
-    let mut modules = js
-        .context
-        .async_with(async |ctx| {
-            ctx.globals()
-                .get::<_, Vec<String>>("__kugou_modules")
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| format!("failed to read embedded API modules: {error}"))?;
-    modules.extend(native::modules()?);
-    modules.sort();
-    modules.dedup();
+    let modules = native::modules()?;
     let state = AppState {
-        js,
         client,
         device: Arc::new(device_identity()),
         cache: Arc::new(Mutex::new(HashMap::new())),

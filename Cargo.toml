@@ -22,7 +22,6 @@ rand = "0.9.2"
 rand08 = { package = "rand", version = "0.8.5" }
 reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls", "stream", "socks", "gzip", "brotli", "deflate", "zstd"] }
 rsa = "0.9.8"
-rquickjs = { version = "0.12.2", features = ["futures", "parallel"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.143", features = ["preserve_order"] }
 sha1 = "0.10.6"

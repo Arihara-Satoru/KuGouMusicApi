@@ -220,6 +220,7 @@ async function main() {
       { module: 'user_cloud', route: '/user/cloud?userid=0&page=1&pagesize=2', compareShape: true },
       { module: 'user_cloud_del', route: '/user/cloud/del?userid=0&fileid=1&album_audio_id=0', compareShape: true },
       { module: 'user_cloud_match', route: '/user/cloud/match?hash=ABC&album_audio_id=0', compareShape: true },
+      { module: 'user_cloud_upload', route: '/user/cloud/upload?auto_match=false', method: 'POST', body: Buffer.alloc(0), compareShape: true },
       { module: 'user_detail', route: '/user/detail?userid=0', compareShape: true },
       { module: 'user_listen', route: '/user/listen?userid=0&type=0', compareShape: true },
       { module: 'user_playlist', route: '/user/playlist?userid=0&page=1&pagesize=2', compareShape: true },
