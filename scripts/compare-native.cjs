@@ -149,6 +149,7 @@ async function main() {
       { module: 'pc_diantai', route: '/pc/diantai?userid=0', compareShape: true },
       { module: 'personal_fm', route: '/personal/fm?userid=0&action=play', compareShape: true },
       { module: 'playlist_add', route: '/playlist/add?userid=0&type=1&name=test&list_create_userid=0&list_create_listid=0', compareShape: true },
+      { module: 'playlist_del', route: '/playlist/del?listid=1&userid=0', compareShape: true },
       { module: 'playlist_effect', route: '/playlist/effect?page=1&pagesize=2', compareShape: true },
       { module: 'playlist_detail', route: '/playlist/detail?ids=1&userid=0', compareShape: true },
       { module: 'playlist_similar', route: '/playlist/similar?ids=1&userid=0', compareShape: true },
@@ -161,6 +162,7 @@ async function main() {
       { module: 'privilege_lite', route: '/privilege/lite?hash=ABC&album_id=0', compareShape: true },
       { module: 'rank_audio', route: '/rank/audio?rankid=1&page=1&pagesize=2', compareShape: true },
       { module: 'recommend_songs', route: '/recommend/songs?platform=android&userid=0', compareShape: true },
+      { module: 'register_dev', route: '/register/dev?userid=0', compareShape: true },
       { module: 'rank_info', route: '/rank/info?rankid=1&rank_cid=0', compareShape: true },
       { module: 'rank_list', route: '/rank/list?withsong=1', compareShape: true },
       { module: 'rank_top', route: '/rank/top', compareShape: true },
@@ -206,6 +208,8 @@ async function main() {
       { module: 'user_follow', route: '/user/follow?userid=0', compareShape: true },
       { module: 'user_history', route: '/user/history?userid=0', compareShape: true },
       { module: 'user_cloud_url', route: '/user/cloud/url?hash=ABC&album_audio_id=0&audio_id=0', compareShape: true },
+      { module: 'user_cloud', route: '/user/cloud?userid=0&page=1&pagesize=2', compareShape: true },
+      { module: 'user_cloud_del', route: '/user/cloud/del?userid=0&fileid=1&album_audio_id=0', compareShape: true },
       { module: 'user_cloud_match', route: '/user/cloud/match?hash=ABC&album_audio_id=0', compareShape: true },
       { module: 'user_detail', route: '/user/detail?userid=0', compareShape: true },
       { module: 'user_listen', route: '/user/listen?userid=0&type=0', compareShape: true },
@@ -253,6 +257,12 @@ async function main() {
           const hotWords = response.body?.hot_word_list
           if ((Array.isArray(hotWords) && hotWords.length === 0) || (hotWords && Object.keys(hotWords).length === 0)) {
             response.body.hot_word_list = []
+          }
+        }
+        if (test.module === 'register_dev' && response.body?.status === 1) {
+          const data = response.body.data
+          if ((Array.isArray(data) && data.length === 0) || typeof data?.dfid === 'string') {
+            response.body.data = { registered: true }
           }
         }
       }

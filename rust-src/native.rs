@@ -1418,6 +1418,67 @@ pub async fn invoke(
             )
             .await
         }
+        "register_dev" => {
+            let guid = cookie_value(params, "KUGOU_API_GUID").unwrap_or(Value::Null);
+            let encrypted = playlist_aes_encrypt(&json!({
+                "availableRamSize": value_or(params, "availableRamSize", json!(4983533568_u64)),
+                "availableRomSize": value_or(params, "availableRomSize", json!(48114719)),
+                "availableSDSize": value_or(params, "availableSDSize", json!(48114717)),
+                "basebandVer": value_or(params, "basebandVer", json!("")),
+                "batteryLevel": value_or(params, "batteryLevel", json!(100)),
+                "batteryStatus": value_or(params, "batteryStatus", json!(3)),
+                "brand": value_or(params, "brand", json!("Redmi")),
+                "buildSerial": value_or(params, "buildSerial", json!("unknown")),
+                "device": value_or(params, "device", json!("marble")),
+                "imei": value_or(params, "imei", guid.clone()),
+                "imsi": value_or(params, "imsi", json!("")),
+                "manufacturer": value_or(params, "manufacturer", json!("Xiaomi")),
+                "uuid": value_or(params, "uuid", guid),
+                "accelerometer": value_or(params, "accelerometer", json!(false)),
+                "accelerometerValue": value_or(params, "accelerometerValue", json!("")),
+                "gravity": value_or(params, "gravity", json!(false)),
+                "gravityValue": value_or(params, "gravityValue", json!("")),
+                "gyroscope": value_or(params, "gyroscope", json!(false)),
+                "gyroscopeValue": value_or(params, "gyroscopeValue", json!("")),
+                "light": value_or(params, "light", json!(false)),
+                "lightValue": value_or(params, "lightValue", json!("")),
+                "magnetic": value_or(params, "magnetic", json!(false)),
+                "magneticValue": value_or(params, "magneticValue", json!("")),
+                "orientation": value_or(params, "orientation", json!(false)),
+                "orientationValue": value_or(params, "orientationValue", json!("")),
+                "pressure": value_or(params, "pressure", json!(false)),
+                "pressureValue": value_or(params, "pressureValue", json!("")),
+                "step_counter": value_or(params, "step_counter", json!(false)),
+                "step_counterValue": value_or(params, "step_counterValue", json!("")),
+                "temperature": value_or(params, "temperature", json!(false)),
+                "temperatureValue": value_or(params, "temperatureValue", json!("")),
+            }))?;
+            let p = rsa_pkcs1_encrypt(
+                &json!({
+                    "aes": encrypted.key,
+                    "uid": param_or_cookie(params, "userid", json!(0)),
+                    "token": param_or_cookie(params, "token", json!("")),
+                }),
+                platform_config().2,
+            )?;
+            let mut response = android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/risk/v2/r_register_dev")
+                    .base_url("https://userservice.kugou.com")
+                    .params(json!({ "part": 1, "platid": 1, "p": p }))
+                    .data(json!(encrypted.base64))
+                    .decrypt_playlist_response(encrypted.key, false),
+            )
+            .await?;
+            if response.body.get("status").and_then(Value::as_i64) == Some(1)
+                && let Some(dfid) = response.body.pointer("/data/dfid")
+            {
+                response.cookie.push(format!("dfid={}", js_string(dfid)));
+            }
+            Ok(response)
+        }
         "rank_info" => {
             android_request(
                 client,
@@ -2810,6 +2871,50 @@ pub async fn invoke(
             )
             .await
         }
+        "playlist_del" => {
+            let clienttime = unix_time_millis()? / 1000;
+            let userid = param_or_cookie(params, "userid", json!(0));
+            let token = param_or_cookie(params, "token", json!(""));
+            let encrypted = playlist_aes_encrypt(&json!({
+                "listid": number_value(value(params, "listid")),
+                "total_ver": 0,
+                "type": 1,
+            }))?;
+            let p = rsa_pkcs1_encrypt(
+                &json!({ "aes": encrypted.key, "uid": userid, "token": token }),
+                platform_config().2,
+            )?
+            .to_uppercase();
+            let (_, clientver, is_lite) = platform_config();
+            let response = android_request_inner(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v2/delete_list")
+                    .params(json!({
+                        "clienttime": clienttime,
+                        "key": sign_params_key(clienttime, is_lite),
+                        "last_area": "gztx",
+                        "clientver": clientver,
+                        "appid": platform_config().0,
+                        "last_time": clienttime,
+                        "p": p,
+                    }))
+                    .data(json!(encrypted.base64))
+                    .header("x-router", "cloudlist.service.kugou.com")
+                    .decrypt_playlist_response(encrypted.key, false),
+            )
+            .await;
+            Ok(match response {
+                Ok(response) if response.status != 502 => response,
+                _ => ModuleResponse {
+                    status: 500,
+                    body: json!({}),
+                    cookie: Vec::new(),
+                    headers: HashMap::new(),
+                },
+            })
+        }
         "playlist_track_all" => {
             let pagesize = number_value(value_or(params, "pagesize", json!(30)))
                 .as_f64()
@@ -3546,6 +3651,130 @@ pub async fn invoke(
             enrich_cloud_match(&mut response.body);
             Ok(response)
         }
+        "user_cloud" => {
+            let clienttime = unix_time_millis()? / 1000;
+            let userid = param_or_cookie(params, "userid", json!(0));
+            let token = param_or_cookie(params, "token", json!(""));
+            let encrypted = playlist_aes_encrypt(&json!({
+                "page": value_nullish(params, "page", json!(1)),
+                "pagesize": value_nullish(params, "pagesize", json!(30)),
+                "getkmr": 1,
+            }))?;
+            let p = rsa_pkcs1_encrypt(
+                &json!({ "aes": encrypted.key, "uid": userid, "token": token }),
+                platform_config().2,
+            )?
+            .to_uppercase();
+            let (appid, clientver, is_lite) = platform_config();
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v1/get_list")
+                    .base_url("https://mcloudservice.kugou.com")
+                    .params(json!({
+                        "clienttime": clienttime,
+                        "mid": cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                        "key": sign_params_key(clienttime, is_lite),
+                        "clientver": clientver,
+                        "appid": appid,
+                        "p": p,
+                    }))
+                    .raw_data(encrypted.bytes)
+                    .clear_default_params()
+                    .unsigned()
+                    .decrypt_playlist_response(encrypted.key, false),
+            )
+            .await
+        }
+        "user_cloud_del" => {
+            let fileids = split_values(
+                params
+                    .get("fileids")
+                    .filter(|value| truthy(value))
+                    .or_else(|| params.get("fileid").filter(|value| truthy(value)))
+                    .or_else(|| params.get("kv_ids").filter(|value| truthy(value)))
+                    .or_else(|| params.get("kv_id").filter(|value| truthy(value)))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            if fileids.is_empty() {
+                return Ok(ModuleResponse {
+                    status: 500,
+                    body: json!({ "status": 0, "msg": "请传入 fileid 或 kv_id" }),
+                    cookie: Vec::new(),
+                    headers: HashMap::new(),
+                });
+            }
+            let album_audio_ids = split_values(
+                params
+                    .get("album_audio_ids")
+                    .filter(|value| truthy(value))
+                    .or_else(|| params.get("album_audio_id").filter(|value| truthy(value)))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            let data = fileids
+                .iter()
+                .enumerate()
+                .map(|(index, fileid)| {
+                    let numeric = number_value(json!(fileid));
+                    let kv_id = if matches!(numeric, Value::String(_)) {
+                        json!(fileid)
+                    } else {
+                        numeric
+                    };
+                    let album_audio_id = album_audio_ids
+                        .get(index)
+                        .or_else(|| album_audio_ids.first())
+                        .map(String::as_str)
+                        .or_else(|| {
+                            params
+                                .get("mixid")
+                                .filter(|value| truthy(value))
+                                .or_else(|| params.get("mix_id").filter(|value| truthy(value)))
+                                .and_then(Value::as_str)
+                        })
+                        .unwrap_or("0");
+                    json!({
+                        "kv_id": kv_id,
+                        "album_audio_id": number_value(json!(album_audio_id)),
+                    })
+                })
+                .collect::<Vec<_>>();
+            let encrypted = playlist_aes_encrypt(&json!({ "data": data }))?;
+            let userid = js_string(&param_or_cookie(params, "userid", json!(0)));
+            let token = param_or_cookie(params, "token", json!(""));
+            let p = rsa_pkcs1_encrypt(
+                &json!({ "aes": encrypted.key, "uid": userid, "token": token }),
+                platform_config().2,
+            )?
+            .to_uppercase();
+            let (default_appid, default_clientver, is_lite) = platform_config();
+            let appid = value_or(params, "appid", json!(default_appid));
+            let clientver = value_or(params, "clientver", json!(default_clientver));
+            let clienttime = unix_time_millis()? / 1000;
+            android_request(
+                client,
+                params,
+                ip,
+                NativeRequest::post("/v1/del_files")
+                    .base_url("https://mcloudservice.kugou.com")
+                    .params(json!({
+                        "clienttime": clienttime,
+                        "mid": cookie_value(params, "KUGOU_API_MID").unwrap_or(Value::Null),
+                        "key": sign_params_key_config(clienttime, &appid, &clientver, is_lite),
+                        "clientver": clientver,
+                        "appid": appid,
+                        "p": p,
+                    }))
+                    .raw_data(encrypted.bytes)
+                    .clear_default_params()
+                    .unsigned()
+                    .decrypt_playlist_response(encrypted.key, true),
+            )
+            .await
+        }
         "user_detail" => {
             let clienttime = unix_time_millis()? / 1000;
             let token = param_or_cookie(params, "token", json!(""));
@@ -3641,6 +3870,7 @@ struct NativeRequest {
     encrypt_key: bool,
     use_input_cookie: bool,
     clear_default_params: bool,
+    playlist_response: Option<(String, bool)>,
 }
 
 #[derive(Clone, Copy)]
@@ -3676,6 +3906,7 @@ impl NativeRequest {
             encrypt_key: false,
             use_input_cookie: true,
             clear_default_params: false,
+            playlist_response: None,
         }
     }
 
@@ -3726,6 +3957,11 @@ impl NativeRequest {
 
     fn clear_default_params(mut self) -> Self {
         self.clear_default_params = true;
+        self
+    }
+
+    fn decrypt_playlist_response(mut self, key: String, fallback: bool) -> Self {
+        self.playlist_response = Some((key, fallback));
         self
     }
 }
@@ -4194,6 +4430,14 @@ fn random_alphanumeric(length: usize) -> String {
         .collect()
 }
 
+fn random_uppercase_digits(length: usize) -> String {
+    const CHARACTERS: &[u8] = b"1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut random = rand::rng();
+    (0..length)
+        .map(|_| CHARACTERS[random.random_range(0..CHARACTERS.len())] as char)
+        .collect()
+}
+
 fn platform_config() -> (u16, u32, bool) {
     let is_lite = std::env::var("platform").as_deref() == Ok("lite");
     if is_lite {
@@ -4357,12 +4601,22 @@ async fn android_request_inner(
     }
     let response_headers = response.headers().clone();
     let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-    let mut body = serde_json::from_slice(&bytes)
-        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
-    let failed = body.get("status").and_then(Value::as_i64) == Some(0)
-        || body
-            .get("error_code")
-            .is_some_and(|value| truthy(value) && value.as_i64() != Some(0));
+    let mut body = if let Some((key, fallback)) = &options.playlist_response {
+        match playlist_aes_decrypt(&bytes, key) {
+            Ok(body) => body,
+            Err(error) if !fallback => return Err(error),
+            Err(_) => serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())),
+        }
+    } else {
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+    };
+    let failed = options.playlist_response.is_none()
+        && (body.get("status").and_then(Value::as_i64) == Some(0)
+            || body
+                .get("error_code")
+                .is_some_and(|value| truthy(value) && value.as_i64() != Some(0)));
     let cookies = response_headers
         .get_all(header::SET_COOKIE)
         .iter()
@@ -4450,6 +4704,27 @@ fn sign_params_key(data: impl std::fmt::Display, is_lite: bool) -> String {
     format!(
         "{:x}",
         md5::compute(format!("{appid}{salt}{clientver}{data}"))
+    )
+}
+
+fn sign_params_key_config(
+    data: impl std::fmt::Display,
+    appid: &Value,
+    clientver: &Value,
+    is_lite: bool,
+) -> String {
+    let salt = if is_lite {
+        "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA"
+    } else {
+        "OIlwieks28dk2k092lksi2UIkp"
+    };
+    format!(
+        "{:x}",
+        md5::compute(format!(
+            "{}{salt}{}{data}",
+            js_string(appid),
+            js_string(clientver)
+        ))
     )
 }
 
@@ -4598,6 +4873,30 @@ fn aes_encrypt_random(data: &Value) -> Result<(String, String), String> {
     Ok((temporary_key, aes_encrypt_with_key(data, &key, iv)?))
 }
 
+struct PlaylistEncryption {
+    key: String,
+    bytes: Vec<u8>,
+    base64: String,
+}
+
+fn playlist_aes_encrypt(data: &Value) -> Result<PlaylistEncryption, String> {
+    let key = random_uppercase_digits(6).to_lowercase();
+    let digest = format!("{:x}", md5::compute(&key));
+    let bytes = aes_cbc_encrypt(js_string(data).as_bytes(), &digest[..16], &digest[16..])?;
+    Ok(PlaylistEncryption {
+        key,
+        base64: BASE64.encode(&bytes),
+        bytes,
+    })
+}
+
+fn playlist_aes_decrypt(data: &[u8], key: &str) -> Result<Value, String> {
+    let digest = format!("{:x}", md5::compute(key));
+    let text = String::from_utf8(aes_cbc_decrypt(data, &digest[..16], &digest[16..])?)
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+}
+
 fn clean_set_cookie(value: &str) -> String {
     value
         .split(';')
@@ -4689,7 +4988,7 @@ mod tests {
     #[test]
     fn manifest_only_lists_implemented_handlers() {
         let modules = modules().expect("native manifest should be valid JSON");
-        assert_eq!(modules.len(), 155);
+        assert_eq!(modules.len(), 159);
         assert!(modules.iter().all(|module| supports(module)));
     }
 
@@ -4791,6 +5090,16 @@ mod tests {
         assert_eq!(
             decode_krc("a3JjMTjb6kFugkZ3gQUBpeObQ0c58deQm8gqRxBYOWk="),
             "[00:00.00]test歌词"
+        );
+    }
+
+    #[test]
+    fn playlist_encryption_round_trips() {
+        let value = json!({ "page": 1, "pagesize": 30 });
+        let encrypted = playlist_aes_encrypt(&value).unwrap();
+        assert_eq!(
+            playlist_aes_decrypt(&encrypted.bytes, &encrypted.key).unwrap(),
+            value
         );
     }
 }
