@@ -1,5 +1,5 @@
 //加入队伍
-const crypto = require('crypto');
+const crypto = require('node:crypto');
 const { cryptoMd5,appid,clientver,srcappid,publicLiteRasKey } = require('../util');
 
 function rsaNoPadEncrypt(data, publicKeyPem) {

@@ -1,5 +1,5 @@
 //获取我的状态（加入队伍、创建队伍等）
-const crypto = require('crypto');
+const crypto = require('node:crypto');
 const { signatureWebParams,appid,clientver,srcappid,publicLiteRasKey } = require('../util');
 
 function rsaNoPadEncrypt(data, publicKeyPem) {

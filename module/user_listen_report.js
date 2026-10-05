@@ -1,7 +1,7 @@
 // CSCC lite 播放上报；由播放器在真实播放开始/结束时调用。
-const crypto = require('crypto');
-const zlib = require('zlib');
-const { isIP } = require('net');
+const crypto = require('node:crypto');
+const zlib = require('node:zlib');
+const { isIP } = require('node:net');
 const { publicLiteRasKey } = require('../util');
 const gradeInfo = require('./user_grade_info');
 

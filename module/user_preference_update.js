@@ -2,9 +2,8 @@
 // 字段：mode 推荐模式(0 默认/1 熟悉/2 尝鲜)；gender/age 单一 id；lang/style 基础偏好 JSON 字符串（value > 50 视为启用）；
 // song_lang 推荐强度 JSON 字符串（0 屏蔽、50 默认、100 加大）；
 // stylerec_taglist/wish_taglist/inactive_taglist/inactive_singerlist 相关标签列表。
-const crypto = require('crypto');
-const { cryptoAesEncrypt, rsaEncrypt2 } = require('../util');
-const { appid, clientver, liteAppid, liteClientver } = require('../util/config.json');
+const crypto = require('node:crypto');
+const { cryptoAesEncrypt, rsaEncrypt2, appid, clientver, liteAppid, liteClientver } = require('../util');
 
 module.exports = (params = {}, useAxios) => {
   const token = params?.token || params?.cookie?.token || '';

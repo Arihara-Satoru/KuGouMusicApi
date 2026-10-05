@@ -1,7 +1,6 @@
 // 获取用户的听歌偏好设置（性别、年龄段、语言、风格、推荐模式等）。
-const crypto = require('crypto');
-const { cryptoAesEncrypt, rsaEncrypt2 } = require('../util');
-const { appid, clientver, liteAppid, liteClientver } = require('../util/config.json');
+const crypto = require('node:crypto');
+const { cryptoAesEncrypt, rsaEncrypt2, appid, clientver, liteAppid, liteClientver } = require('../util');
 
 module.exports = (params = {}, useAxios) => {
   const token = params?.token || params?.cookie?.token || '';

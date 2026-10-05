@@ -1,5 +1,5 @@
 //获取历史组队信息
-const crypto = require('crypto');
+const crypto = require('node:crypto');
 const { signatureWebParams,appid,clientver,srcappid,publicLiteRasKey } = require('../util');
 
 function rsaNoPadEncrypt(data, publicKeyPem) {

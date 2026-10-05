@@ -1,7 +1,7 @@
 // 获取访客列表（模块路由 /user/visitors）
 // 接口：POST http://usercenter.kugou.com/v2/get_visitors
 // 对应概念版 com.kugou.common.userCenter.protocol.v（协议类）+ protocol.a（基类）
-const crypto = require('crypto');
+const crypto = require('node:crypto');
 const { cryptoMd5, signatureAndroidParams, publicRasKey, publicLiteRasKey } = require('../util');
 
 const SALT = { 1005: 'OIlwieks28dk2k092lksi2UIkp', 3116: 'LnT6xpN3khm36zse0QzvmgTZ3waWdRSA' };
