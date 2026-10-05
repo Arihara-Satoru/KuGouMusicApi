@@ -1,6 +1,6 @@
 // 获取用户的听歌偏好设置（性别、年龄段、语言、风格、推荐模式等）。
 const crypto = require('node:crypto');
-const { cryptoAesEncrypt, rsaEncrypt2, appid, clientver, liteAppid, liteClientver } = require('../util');
+const { cryptoAesEncrypt, rsaEncrypt2, appid, clientver } = require('../util');
 
 module.exports = (params = {}, useAxios) => {
   const token = params?.token || params?.cookie?.token || '';
@@ -8,9 +8,6 @@ module.exports = (params = {}, useAxios) => {
   const mid = params?.mid || params?.cookie?.mid || params?.cookie?.KUGOU_API_MID || '-';
   const uuid = params?.uuid || params?.cookie?.uuid || params?.cookie?.KUGOU_API_GUID || '-';
   const dfid = params?.dfid || params?.cookie?.dfid || '-';
-  const isLite = process.env.platform === 'lite';
-  const appId = isLite ? liteAppid : appid;
-  const clientVer = isLite ? liteClientver : clientver;
   const clienttime = Math.floor(Date.now() / 1000);
 
   const strG2 = crypto.randomBytes(8).toString('hex');
@@ -23,13 +20,13 @@ module.exports = (params = {}, useAxios) => {
     baseURL: 'https://gateway.kugou.com',
     url: '/userpreferservice/v1/get_user_conf',
     method: 'POST',
-    params: { appid: appId, clientver: clientVer, clienttime, mid, dfid, uuid },
+    params: { appid, clientver, clienttime, mid, dfid, uuid },
     data: body,
     clearDefaultParams: true,
     encryptType: 'android',
     headers: {
       'Content-Type': 'application/json',
-      'User-Agent': `Android15-1070-${clientVer}-201-0-get_user_conf-wifi`,
+      'User-Agent': `Android15-1070-${clientver}-201-0-get_user_conf-wifi`,
       'KG-Rec': '1',
       'KG-RC': '1',
     },

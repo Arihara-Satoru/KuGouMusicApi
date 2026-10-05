@@ -3,7 +3,7 @@
 // song_lang 推荐强度 JSON 字符串（0 屏蔽、50 默认、100 加大）；
 // stylerec_taglist/wish_taglist/inactive_taglist/inactive_singerlist 相关标签列表。
 const crypto = require('node:crypto');
-const { cryptoAesEncrypt, rsaEncrypt2, appid, clientver, liteAppid, liteClientver } = require('../util');
+const { cryptoAesEncrypt, rsaEncrypt2, appid, clientver } = require('../util');
 
 module.exports = (params = {}, useAxios) => {
   const token = params?.token || params?.cookie?.token || '';
@@ -11,9 +11,6 @@ module.exports = (params = {}, useAxios) => {
   const mid = params?.mid || params?.cookie?.mid || params?.cookie?.KUGOU_API_MID || '-';
   const uuid = params?.uuid || params?.cookie?.uuid || params?.cookie?.KUGOU_API_GUID || '-';
   const dfid = params?.dfid || params?.cookie?.dfid || '-';
-  const isLite = process.env.platform === 'lite';
-  const appId = isLite ? liteAppid : appid;
-  const clientVer = isLite ? liteClientver : clientver;
   const clienttime = Math.floor(Date.now() / 1000);
 
   const dataFields = [
@@ -50,13 +47,13 @@ module.exports = (params = {}, useAxios) => {
     baseURL: 'https://gateway.kugou.com',
     url: '/userpreferservice/v1/update_user_conf',
     method: 'POST',
-    params: { appid: appId, clientver: clientVer, clienttime, mid, dfid, uuid },
+    params: { appid, clientver, clienttime, mid, dfid, uuid },
     data: body,
     clearDefaultParams: true,
     encryptType: 'android',
     headers: {
       'Content-Type': 'application/json',
-      'User-Agent': `Android15-1070-${clientVer}-201-0-update_user_conf-wifi`,
+      'User-Agent': `Android15-1070-${clientver}-201-0-update_user_conf-wifi`,
       'KG-Rec': '1',
       'KG-RC': '1',
     },
